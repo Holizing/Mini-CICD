@@ -29,13 +29,6 @@ Swagger UI is available at:
 http://localhost:8000/docs
 ```
 
-Run backend tests:
-
-```bash
-pip install -r backend/requirements-dev.txt
-pytest backend/tests
-```
-
 ### Frontend
 
 ```bash
