@@ -14,6 +14,8 @@ class DeployStartRequest(BaseModel):
     server_ssh_key: Optional[str] = None
     deploy_path: str
     service_name: str
+    deploy_type: str = Field(default="source")  # source, docker
+    deploy_script: Optional[str] = None
 
 
 class DeployResponse(BaseModel):
@@ -26,6 +28,8 @@ class DeployResponse(BaseModel):
     server_user: str
     deploy_path: str
     service_name: str
+    deploy_type: str
+    deploy_script: Optional[str] = None
     status: str
     start_time: datetime
     end_time: Optional[datetime]

@@ -14,6 +14,8 @@ const Deploy = () => {
   const [serverPassword, setServerPassword] = useState('')
   const [deployPath, setDeployPath] = useState('')
   const [serviceName, setServiceName] = useState('')
+  const [deployType, setDeployType] = useState('source')
+  const [deployScript, setDeployScript] = useState('')
   const [loading, setLoading] = useState(false)
   const [currentDeploy, setCurrentDeploy] = useState(null)
   const [log, setLog] = useState('')
@@ -95,7 +97,9 @@ const Deploy = () => {
         server_user: serverUser,
         server_password: serverPassword || undefined,
         deploy_path: deployPath,
-        service_name: serviceName
+        service_name: serviceName,
+        deploy_type: deployType,
+        deploy_script: deployScript || undefined
       })
 
       setCurrentDeploy(response)
@@ -113,12 +117,25 @@ const Deploy = () => {
   const handleBuildChange = (e) => {
     const selectedBuildId = e.target.value
     setBuildId(selectedBuildId)
-    
+
     const selectedBuild = builds.find(b => b.id === parseInt(selectedBuildId))
     if (selectedBuild) {
       setProjectId(selectedBuild.project_id)
       setProjectName(selectedBuild.project_name)
       setBranch(selectedBuild.branch)
+      setDeployType(selectedBuild.deploy_type || 'source')
+    }
+  }
+
+  const handleDeployTypeChange = (e) => {
+    const newType = e.target.value
+    setDeployType(newType)
+
+    // Auto-fill deploy script based on deploy type
+    if (newType === 'source') {
+      setDeployScript('git pull origin main\npip install -r requirements.txt\nsystemctl restart myapp\nsystemctl status myapp')
+    } else if (newType === 'docker') {
+      setDeployScript('docker pull company/backend:latest\ndocker compose up -d')
     }
   }
 
@@ -274,6 +291,35 @@ const Deploy = () => {
                 }}
                 disabled
               />
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{
+                display: 'block',
+                fontSize: '14px',
+                fontWeight: '500',
+                color: '#374151',
+                marginBottom: '6px'
+              }}>
+                Deploy Type
+              </label>
+              <select
+                value={deployType}
+                onChange={handleDeployTypeChange}
+                required
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  outline: 'none',
+                  backgroundColor: 'white'
+                }}
+              >
+                <option value="source">Source Deploy (Python, NodeJS, Java, etc.)</option>
+                <option value="docker">Docker Deploy</option>
+              </select>
             </div>
 
             <div style={{ marginBottom: '16px' }}>
@@ -443,6 +489,48 @@ const Deploy = () => {
                   e.target.style.borderColor = '#d1d5db'
                 }}
               />
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{
+                display: 'block',
+                fontSize: '14px',
+                fontWeight: '500',
+                color: '#374151',
+                marginBottom: '6px'
+              }}>
+                Deploy Script (Optional - Auto-filled based on Deploy Type)
+              </label>
+              <textarea
+                value={deployScript}
+                onChange={(e) => setDeployScript(e.target.value)}
+                placeholder={deployType === 'docker' ? 'docker pull company/backend:latest\ndocker compose up -d' : 'git pull origin main\npip install -r requirements.txt\nsystemctl restart myapp\nsystemctl status myapp'}
+                rows={8}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  fontFamily: 'monospace',
+                  outline: 'none',
+                  transition: 'border-color 0.2s',
+                  resize: 'vertical'
+                }}
+                onFocus={(e) => {
+                  e.target.style.borderColor = '#3b82f6'
+                }}
+                onBlur={(e) => {
+                  e.target.style.borderColor = '#d1d5db'
+                }}
+              />
+              <div style={{
+                fontSize: '12px',
+                color: '#6b7280',
+                marginTop: '4px'
+              }}>
+                {deployType === 'docker' ? 'Docker pull and deployment commands' : 'Custom deployment commands (auto-filled for Source Deploy)'}
+              </div>
             </div>
 
             {error && (

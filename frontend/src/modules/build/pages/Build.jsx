@@ -8,6 +8,8 @@ const Build = () => {
   const [projectName, setProjectName] = useState('')
   const [branch, setBranch] = useState('main')
   const [gitUrl, setGitUrl] = useState('')
+  const [deployType, setDeployType] = useState('source')
+  const [buildScript, setBuildScript] = useState('')
   const [loading, setLoading] = useState(false)
   const [currentBuild, setCurrentBuild] = useState(null)
   const [log, setLog] = useState('')
@@ -53,7 +55,7 @@ const Build = () => {
 
   const handleStartBuild = async (e) => {
     e.preventDefault()
-    
+
     if (!projectId || !projectName || !branch || !gitUrl) {
       setError('Please fill in all required fields')
       return
@@ -69,11 +71,13 @@ const Build = () => {
         project_id: parseInt(projectId),
         project_name: projectName,
         branch,
-        git_url: gitUrl
+        git_url: gitUrl,
+        deploy_type: deployType,
+        build_script: buildScript || undefined
       })
 
       setCurrentBuild(response)
-      
+
       // Start fetching logs
       fetchLog(response.id)
     } catch (err) {
@@ -81,6 +85,18 @@ const Build = () => {
       console.error(err)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleDeployTypeChange = (e) => {
+    const newType = e.target.value
+    setDeployType(newType)
+
+    // Auto-fill build script based on deploy type
+    if (newType === 'source') {
+      setBuildScript('')
+    } else if (newType === 'docker') {
+      setBuildScript('docker build -t company/backend:latest .\ndocker push company/backend:latest')
     }
   }
 
@@ -252,6 +268,77 @@ const Build = () => {
                   e.target.style.borderColor = '#d1d5db'
                 }}
               />
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{
+                display: 'block',
+                fontSize: '14px',
+                fontWeight: '500',
+                color: '#374151',
+                marginBottom: '6px'
+              }}>
+                Deploy Type
+              </label>
+              <select
+                value={deployType}
+                onChange={handleDeployTypeChange}
+                required
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  outline: 'none',
+                  backgroundColor: 'white'
+                }}
+              >
+                <option value="source">Source Deploy (Python, NodeJS, Java, etc.)</option>
+                <option value="docker">Docker Deploy</option>
+              </select>
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{
+                display: 'block',
+                fontSize: '14px',
+                fontWeight: '500',
+                color: '#374151',
+                marginBottom: '6px'
+              }}>
+                Build Script (Optional - Auto-filled based on Deploy Type)
+              </label>
+              <textarea
+                value={buildScript}
+                onChange={(e) => setBuildScript(e.target.value)}
+                placeholder={deployType === 'docker' ? 'docker build -t company/backend:latest .\ndocker push company/backend:latest' : 'pip install -r requirements.txt\nnpm run build\nmvn clean package'}
+                rows={6}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  fontFamily: 'monospace',
+                  outline: 'none',
+                  transition: 'border-color 0.2s',
+                  resize: 'vertical'
+                }}
+                onFocus={(e) => {
+                  e.target.style.borderColor = '#3b82f6'
+                }}
+                onBlur={(e) => {
+                  e.target.style.borderColor = '#d1d5db'
+                }}
+              />
+              <div style={{
+                fontSize: '12px',
+                color: '#6b7280',
+                marginTop: '4px'
+              }}>
+                {deployType === 'docker' ? 'Docker build and push commands' : 'Custom build commands (leave empty for default)'}
+              </div>
             </div>
 
             {error && (

@@ -31,6 +31,8 @@ class BuildService:
             project_id=request.project_id,
             project_name=request.project_name,
             branch=request.branch,
+            deploy_type=request.deploy_type,
+            build_script=request.build_script,
             status="running",
             log_path=get_log_path(self.logs_dir, 0)  # Temporary, will update after getting ID
         )
@@ -175,6 +177,8 @@ class BuildService:
             project_name=build.project_name,
             branch=build.branch,
             commit_hash=build.commit_hash,
+            deploy_type=build.deploy_type,
+            build_script=build.build_script,
             status=build.status,
             start_time=build.start_time,
             end_time=build.end_time,

@@ -42,6 +42,8 @@ class DeployService:
             server_user=request.server_user,
             deploy_path=request.deploy_path,
             service_name=request.service_name,
+            deploy_type=request.deploy_type,
+            deploy_script=request.deploy_script,
             status="running",
             log_path=get_log_path(self.logs_dir, 0)  # Temporary, will update after getting ID
         )
@@ -86,44 +88,11 @@ class DeployService:
                 raise Exception(error)
             self._log(log_file, f"SSH connection established")
             
-            # Change to deploy directory
-            self._log(log_file, f"Changing to deploy directory: {request.deploy_path}")
-            success, stdout, stderr = ssh.execute_command(f"cd {request.deploy_path}")
-            if not success:
-                raise Exception(f"Failed to change directory: {stderr}")
-            self._log(log_file, f"Changed to deploy directory")
-            
-            # Git pull
-            self._log(log_file, f"Pulling latest changes from branch {request.branch}...")
-            success, stdout, stderr = ssh.execute_command(f"cd {request.deploy_path} && git pull origin {request.branch}")
-            if not success:
-                raise Exception(f"Git pull failed: {stderr}")
-            self._log(log_file, f"Git pull successful")
-            self._log(log_file, stdout)
-            
-            # Install dependencies
-            self._log(log_file, f"Installing dependencies...")
-            success, stdout, stderr = ssh.execute_command(f"cd {request.deploy_path} && pip install -r requirements.txt")
-            if not success:
-                raise Exception(f"pip install failed: {stderr}")
-            self._log(log_file, f"Dependencies installed successfully")
-            self._log(log_file, stdout)
-            
-            # Restart service
-            self._log(log_file, f"Restarting service: {request.service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"systemctl restart {request.service_name}")
-            if not success:
-                raise Exception(f"Service restart failed: {stderr}")
-            self._log(log_file, f"Service restarted successfully")
-            
-            # Check service status
-            self._log(log_file, f"Checking service status...")
-            success, stdout, stderr = ssh.execute_command(f"systemctl status {request.service_name}")
-            self._log(log_file, f"Service status:")
-            self._log(log_file, stdout)
-            
-            if not success:
-                raise Exception(f"Service is not running properly")
+            # Execute custom deploy script if provided, otherwise use default Python deployment
+            if request.deploy_script:
+                self._execute_custom_script(ssh, request.deploy_script, request.deploy_path, log_file)
+            else:
+                self._execute_default_deployment(ssh, request, log_file)
             
             # Close SSH connection
             ssh.close()
@@ -153,6 +122,94 @@ class DeployService:
             self.db.commit()
             self._log(log_file, f"=== Deploy #{deploy.id} Failed ===")
             self._log(log_file, f"Error: {str(e)}")
+
+    def _execute_custom_script(self, ssh: SSHClient, deploy_script: str, deploy_path: str, log_file: str) -> None:
+        """
+        Execute custom deploy script commands sequentially.
+        
+        Args:
+            ssh: SSH client instance
+            deploy_script: Custom deploy script with multiple commands
+            deploy_path: Deployment path
+            log_file: Log file path
+        """
+        self._log(log_file, f"Executing custom deploy script...")
+        self._log(log_file, f"Deploy script:\n{deploy_script}")
+        
+        # Split script into commands (one per line)
+        commands = [cmd.strip() for cmd in deploy_script.splitlines() if cmd.strip()]
+        
+        for i, cmd in enumerate(commands, 1):
+            self._log(log_file, f"\n=== Executing Command {i}/{len(commands)} ===")
+            self._log(log_file, f"Command: {cmd}")
+            
+            # Execute command with deploy path context
+            full_cmd = f"cd {deploy_path} && {cmd}"
+            success, stdout, stderr = ssh.execute_command(full_cmd)
+            
+            # Log output
+            if stdout:
+                self._log(log_file, f"STDOUT:\n{stdout}")
+            if stderr:
+                self._log(log_file, f"STDERR:\n{stderr}")
+            
+            # Check if command failed
+            if not success:
+                raise Exception(f"Command {i} failed: {cmd}\nError: {stderr}")
+            
+            self._log(log_file, f"Command {i} completed successfully")
+        
+        self._log(log_file, f"All commands completed successfully")
+
+    def _execute_default_deployment(self, ssh: SSHClient, request: DeployStartRequest, log_file: str) -> None:
+        """
+        Execute default Python deployment (backward compatibility).
+        
+        Args:
+            ssh: SSH client instance
+            request: Deploy start request
+            log_file: Log file path
+        """
+        self._log(log_file, f"Executing default Python deployment...")
+        
+        # Change to deploy directory
+        self._log(log_file, f"Changing to deploy directory: {request.deploy_path}")
+        success, stdout, stderr = ssh.execute_command(f"cd {request.deploy_path}")
+        if not success:
+            raise Exception(f"Failed to change directory: {stderr}")
+        self._log(log_file, f"Changed to deploy directory")
+        
+        # Git pull
+        self._log(log_file, f"Pulling latest changes from branch {request.branch}...")
+        success, stdout, stderr = ssh.execute_command(f"cd {request.deploy_path} && git pull origin {request.branch}")
+        if not success:
+            raise Exception(f"Git pull failed: {stderr}")
+        self._log(log_file, f"Git pull successful")
+        self._log(log_file, stdout)
+        
+        # Install dependencies
+        self._log(log_file, f"Installing dependencies...")
+        success, stdout, stderr = ssh.execute_command(f"cd {request.deploy_path} && pip install -r requirements.txt")
+        if not success:
+            raise Exception(f"pip install failed: {stderr}")
+        self._log(log_file, f"Dependencies installed successfully")
+        self._log(log_file, stdout)
+        
+        # Restart service
+        self._log(log_file, f"Restarting service: {request.service_name}...")
+        success, stdout, stderr = ssh.execute_command(f"systemctl restart {request.service_name}")
+        if not success:
+            raise Exception(f"Service restart failed: {stderr}")
+        self._log(log_file, f"Service restarted successfully")
+        
+        # Check service status
+        self._log(log_file, f"Checking service status...")
+        success, stdout, stderr = ssh.execute_command(f"systemctl status {request.service_name}")
+        self._log(log_file, f"Service status:")
+        self._log(log_file, stdout)
+        
+        if not success:
+            raise Exception(f"Service is not running properly")
 
     def get_deploy_status(self, deploy_id: int) -> Optional[DeployResponse]:
         """
@@ -245,6 +302,8 @@ class DeployService:
             server_user=deploy.server_user,
             deploy_path=deploy.deploy_path,
             service_name=deploy.service_name,
+            deploy_type=deploy.deploy_type,
+            deploy_script=deploy.deploy_script,
             status=deploy.status,
             start_time=deploy.start_time,
             end_time=deploy.end_time,

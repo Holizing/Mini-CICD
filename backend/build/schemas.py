@@ -8,6 +8,8 @@ class BuildStartRequest(BaseModel):
     project_name: str
     branch: str
     git_url: str
+    deploy_type: str = Field(default="source")  # source, docker
+    build_script: Optional[str] = None
 
 
 class BuildResponse(BaseModel):
@@ -16,6 +18,8 @@ class BuildResponse(BaseModel):
     project_name: str
     branch: str
     commit_hash: Optional[str]
+    deploy_type: str
+    build_script: Optional[str]
     status: str
     start_time: datetime
     end_time: Optional[datetime]

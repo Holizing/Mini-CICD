@@ -11,6 +11,8 @@ class Build(Base):
     project_name = Column(String(255), nullable=False)
     branch = Column(String(255), nullable=False)
     commit_hash = Column(String(255), nullable=True)
+    deploy_type = Column(String(50), nullable=False, default="source")  # source, docker
+    build_script = Column(Text, nullable=True)  # Custom build script
     status = Column(String(50), nullable=False, default="running")  # running, success, failed
     start_time = Column(DateTime(timezone=True), server_default=func.now())
     end_time = Column(DateTime(timezone=True), nullable=True)
