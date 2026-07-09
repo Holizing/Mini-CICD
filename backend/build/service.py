@@ -47,40 +47,44 @@ class BuildService:
         
         # Execute build asynchronously (in production, use Celery or similar)
         # For now, run synchronously
-        self._execute_build_sync(build, request.git_url)
+        self._execute_build_sync(build, request.git_url, request.build_script)
         
         return self._build_to_response(build)
 
-    def _execute_build_sync(self, build: Build, git_url: str) -> None:
+    def _execute_build_sync(self, build: Build, git_url: str, build_script: Optional[str] = None) -> None:
         """
         Execute build synchronously.
-        
+
         Args:
             build: Build model instance
             git_url: Git repository URL
+            build_script: Custom build script (optional)
         """
         start_time = time.time()
-        
+
         try:
-            success, commit_hash, error_message = self.runner.execute_build(
+            success, commit_hash, error_message, artifact_path, artifact_type = self.runner.execute_build(
                 git_url=git_url,
                 project_name=build.project_name,
                 branch=build.branch,
-                build_id=build.id
+                build_id=build.id,
+                build_script=build_script
             )
             
             # Update build record
             end_time = datetime.utcnow()
             duration = int(time.time() - start_time)
-            
+
             build.status = "success" if success else "failed"
             build.commit_hash = commit_hash
+            build.artifact_path = artifact_path
+            build.artifact_type = artifact_type
             build.end_time = end_time
             build.duration = duration
-            
+
             if not success:
                 build.error_message = error_message
-            
+
             self.db.commit()
             
         except Exception as e:
@@ -164,10 +168,10 @@ class BuildService:
     def _build_to_response(self, build: Build) -> BuildResponse:
         """
         Convert Build model to BuildResponse schema.
-        
+
         Args:
             build: Build model instance
-            
+
         Returns:
             BuildResponse schema
         """
@@ -179,6 +183,8 @@ class BuildService:
             commit_hash=build.commit_hash,
             deploy_type=build.deploy_type,
             build_script=build.build_script,
+            artifact_path=build.artifact_path,
+            artifact_type=build.artifact_type,
             status=build.status,
             start_time=build.start_time,
             end_time=build.end_time,

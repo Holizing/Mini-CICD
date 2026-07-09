@@ -13,6 +13,8 @@ class Build(Base):
     commit_hash = Column(String(255), nullable=True)
     deploy_type = Column(String(50), nullable=False, default="source")  # source, docker
     build_script = Column(Text, nullable=True)  # Custom build script
+    artifact_path = Column(Text, nullable=True)  # Path to built artifact (.war, .jar, .zip, etc.)
+    artifact_type = Column(String(50), nullable=True)  # file, directory, docker_image
     status = Column(String(50), nullable=False, default="running")  # running, success, failed
     start_time = Column(DateTime(timezone=True), server_default=func.now())
     end_time = Column(DateTime(timezone=True), nullable=True)

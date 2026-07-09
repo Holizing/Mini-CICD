@@ -20,6 +20,8 @@ class BuildResponse(BaseModel):
     commit_hash: Optional[str]
     deploy_type: str
     build_script: Optional[str]
+    artifact_path: Optional[str]
+    artifact_type: Optional[str]
     status: str
     start_time: datetime
     end_time: Optional[datetime]

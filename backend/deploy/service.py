@@ -1,5 +1,6 @@
 import os
 import time
+import threading
 from datetime import datetime
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -51,28 +52,53 @@ class DeployService:
         self.db.add(deploy)
         self.db.commit()
         self.db.refresh(deploy)
-        
+
         # Update log path with actual deploy ID
         deploy.log_path = get_log_path(self.logs_dir, deploy.id)
         self.db.commit()
-        
-        # Execute deploy synchronously (in production, use Celery or similar)
-        self._execute_deploy_sync(deploy, request)
-        
+
+        # Log start
+        self._log(deploy.log_path, f"=== Deploy #{deploy.id} Started ===")
+        self._log(deploy.log_path, f"Build ID: {request.build_id}")
+        self._log(deploy.log_path, f"Project: {request.project_name}")
+        self._log(deploy.log_path, f"Branch: {request.branch}")
+        self._log(deploy.log_path, f"Server: {request.server_user}@{request.server_ip}")
+        self._log(deploy.log_path, f"Deploy Path: {request.deploy_path}")
+        self._log(deploy.log_path, f"Service: {request.service_name}")
+
+        # Execute deploy in background thread
+        thread = threading.Thread(target=self._execute_deploy_sync, args=(deploy, request))
+        thread.daemon = True
+        thread.start()
+
+        # Return immediately with deploy_id
         return self._deploy_to_response(deploy)
 
     def _execute_deploy_sync(self, deploy: Deploy, request: DeployStartRequest) -> None:
         """
         Execute deploy synchronously.
-        
+
         Args:
             deploy: Deploy model instance
             request: Deploy start request
         """
         start_time = time.time()
         log_file = deploy.log_path
-        
+
         try:
+            self._log(log_file, f"Step 1: Getting build record...")
+            # Get build record to get artifact path
+            from backend.build.models import Build
+            build = self.db.query(Build).filter(Build.id == request.build_id).first()
+            if build:
+                self._log(log_file, f"Build record found: artifact_path={build.artifact_path}, artifact_type={build.artifact_type}")
+            else:
+                self._log(log_file, f"Warning: Build record not found")
+
+            self._log(log_file, f"Step 2: Initializing SSH client...")
+            self._log(log_file, f"Step 2: Host: {request.server_ip}, User: {request.server_user}")
+            self._log(log_file, f"Step 2: Using password: {'Yes' if request.server_password else 'No'}")
+            self._log(log_file, f"Step 2: Using SSH key: {'Yes' if request.server_ssh_key else 'No'}")
             # Initialize SSH client
             ssh = SSHClient(
                 host=request.server_ip,
@@ -80,47 +106,75 @@ class DeployService:
                 password=request.server_password,
                 key=request.server_ssh_key
             )
-            
+
+            self._log(log_file, f"Step 3: Connecting to SSH server {request.server_user}@{request.server_ip}...")
             # Connect to server
-            self._log(log_file, f"Connecting to SSH server {request.server_user}@{request.server_ip}...")
+            self._log(log_file, f"Step 3: Attempting SSH connection (timeout=60s)...")
             success, error = ssh.connect()
             if not success:
+                self._log(log_file, f"Step 3: SSH connection failed: {error}")
                 raise Exception(error)
-            self._log(log_file, f"SSH connection established")
-            
+            self._log(log_file, f"Step 3: SSH connection established successfully")
+
+            # Upload artifact if exists
+            if build and build.artifact_path:
+                self._log(log_file, f"Step 4: Uploading artifact...")
+                # Fallback to "file" if artifact_type is None (for backward compatibility)
+                artifact_type = build.artifact_type or "file"
+                self._upload_artifact(ssh, build.artifact_path, artifact_type, request.deploy_path, request.service_name, log_file, request.server_password)
+                self._log(log_file, f"Step 4: Artifact upload completed")
+            else:
+                self._log(log_file, f"Step 4: No artifact to upload, skipping")
+
+            self._log(log_file, f"Step 5: Executing deploy script...")
             # Execute custom deploy script if provided, otherwise use default Python deployment
+            # Skip default deployment if artifact was already uploaded (artifact-based deployment)
             if request.deploy_script:
                 self._execute_custom_script(ssh, request.deploy_script, request.deploy_path, log_file)
-            else:
+            elif not (build and build.artifact_path):
+                # Only run default deployment if no artifact was uploaded
                 self._execute_default_deployment(ssh, request, log_file)
-            
+            else:
+                self._log(log_file, f"Step 5: Skipping default deployment (artifact already uploaded and deployed)")
+            self._log(log_file, f"Step 5: Deploy script execution completed")
+
+            self._log(log_file, f"Step 6: Restarting service...")
+            # Service restart is handled in _upload_artifact, but log here for clarity
+            if request.service_name:
+                self._log(log_file, f"Service {request.service_name} restart handled in artifact upload")
+            else:
+                self._log(log_file, f"No service name specified, skipping restart")
+
+            self._log(log_file, f"Step 7: Closing SSH connection...")
             # Close SSH connection
             ssh.close()
-            self._log(log_file, f"SSH connection closed")
-            
+            self._log(log_file, f"Step 7: SSH connection closed")
+
+            self._log(log_file, f"Step 8: Updating deploy record...")
             # Update deploy record as success
             end_time = datetime.utcnow()
             duration = int(time.time() - start_time)
-            
+
             deploy.status = "success"
             deploy.end_time = end_time
             deploy.duration = duration
-            
+
             self.db.commit()
-            self._log(log_file, f"=== Deploy #{deploy.id} Completed Successfully ===")
-            
+            self._log(log_file, f"Step 8: Deploy record updated successfully")
+            self._log(log_file, f"=== Deploy #{deploy.id} Completed Successfully in {duration}s ===")
+
         except Exception as e:
             # Handle errors
             end_time = datetime.utcnow()
             duration = int(time.time() - start_time)
-            
+
             deploy.status = "failed"
             deploy.end_time = end_time
             deploy.duration = duration
             deploy.error_message = str(e)
-            
+
             self.db.commit()
-            self._log(log_file, f"=== Deploy #{deploy.id} Failed ===")
+            self._log(log_file, f"=== Deploy #{deploy.id} Failed after {duration}s ===")
             self._log(log_file, f"Error: {str(e)}")
 
     def _execute_custom_script(self, ssh: SSHClient, deploy_script: str, deploy_path: str, log_file: str) -> None:
@@ -281,6 +335,81 @@ class DeployService:
         """Write message to log file."""
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"{message}\n")
+
+    def _upload_artifact(self, ssh: SSHClient, artifact_path: str, artifact_type: str, deploy_path: str, service_name: str, log_file: str, sudo_password: Optional[str] = None) -> None:
+        """
+        Upload artifact to remote server and deploy it.
+
+        Args:
+            ssh: SSH client instance
+            artifact_path: Local path to the artifact
+            artifact_type: Type of artifact (file or directory)
+            deploy_path: Deployment path on remote server
+            service_name: Name of the service to restart
+            log_file: Log file path
+            sudo_password: Password for sudo commands
+        """
+        import os
+
+        self._log(log_file, f"=== Uploading Artifact ===")
+        self._log(log_file, f"Local artifact: {artifact_path}")
+        self._log(log_file, f"Artifact type: {artifact_type}")
+        self._log(log_file, f"Deploy path: {deploy_path}")
+
+        if artifact_type == "directory":
+            # Upload directory
+            remote_temp_path = f"/tmp/{os.path.basename(artifact_path)}"
+            self._log(log_file, f"Uploading directory to {remote_temp_path}")
+
+            success, error = ssh.upload_directory(artifact_path, remote_temp_path)
+            if not success:
+                raise Exception(f"Directory upload failed: {error}")
+            self._log(log_file, f"Directory uploaded successfully to {remote_temp_path}")
+
+            # Copy directory to deploy path
+            self._log(log_file, f"Copying directory to {deploy_path}")
+            copy_cmd = f"sudo -S cp -r {remote_temp_path}/* {deploy_path}/"
+            self._log(log_file, f"Executing: {copy_cmd}")
+            success, stdout, stderr = ssh.execute_command(copy_cmd, sudo_password=sudo_password)
+            if not success:
+                raise Exception(f"Failed to copy directory: {stderr}")
+            self._log(log_file, f"Directory copied to {deploy_path}")
+
+        else:
+            # Upload file
+            artifact_filename = os.path.basename(artifact_path)
+            remote_temp_path = f"/tmp/{artifact_filename}"
+            self._log(log_file, f"Uploading file to {remote_temp_path}")
+
+            success, error = ssh.upload_file(artifact_path, remote_temp_path)
+            if not success:
+                raise Exception(f"File upload failed: {error}")
+            self._log(log_file, f"File uploaded successfully to {remote_temp_path}")
+
+            # Copy file to deploy path
+            self._log(log_file, f"Copying file to {deploy_path}")
+            copy_cmd = f"sudo -S cp {remote_temp_path} {deploy_path}/"
+            self._log(log_file, f"Executing: {copy_cmd}")
+            success, stdout, stderr = ssh.execute_command(copy_cmd, sudo_password=sudo_password)
+            if not success:
+                raise Exception(f"Failed to copy file: {stderr}")
+            self._log(log_file, f"File copied to {deploy_path}")
+
+        # Restart service if specified
+        if service_name:
+            self._log(log_file, f"Restarting service: {service_name}")
+            restart_cmd = f"sudo -S systemctl restart {service_name}"
+            self._log(log_file, f"Executing: {restart_cmd}")
+            success, stdout, stderr = ssh.execute_command(restart_cmd, sudo_password=sudo_password)
+            if not success:
+                raise Exception(f"Failed to restart service: {stderr}")
+            self._log(log_file, f"Service {service_name} restarted successfully")
+
+            # Check service status
+            status_cmd = f"sudo -S systemctl status {service_name}"
+            self._log(log_file, f"Executing: {status_cmd}")
+            success, stdout, stderr = ssh.execute_command(status_cmd, sudo_password=sudo_password)
+            self._log(log_file, f"Service status:\n{stdout}")
 
     def _deploy_to_response(self, deploy: Deploy) -> DeployResponse:
         """

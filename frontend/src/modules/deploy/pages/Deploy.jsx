@@ -132,8 +132,9 @@ const Deploy = () => {
     setDeployType(newType)
 
     // Auto-fill deploy script based on deploy type
+    // Note: If artifact exists, artifact upload and service restart are automatic
     if (newType === 'source') {
-      setDeployScript('git pull origin main\npip install -r requirements.txt\nsystemctl restart myapp\nsystemctl status myapp')
+      setDeployScript('git pull origin main\npip install -r requirements.txt')
     } else if (newType === 'docker') {
       setDeployScript('docker pull company/backend:latest\ndocker compose up -d')
     }
@@ -499,13 +500,13 @@ const Deploy = () => {
                 color: '#374151',
                 marginBottom: '6px'
               }}>
-                Deploy Script (Optional - Auto-filled based on Deploy Type)
+                Deploy Script (Optional)
               </label>
               <textarea
                 value={deployScript}
                 onChange={(e) => setDeployScript(e.target.value)}
-                placeholder={deployType === 'docker' ? 'docker pull company/backend:latest\ndocker compose up -d' : 'git pull origin main\npip install -r requirements.txt\nsystemctl restart myapp\nsystemctl status myapp'}
-                rows={8}
+                placeholder={deployType === 'docker' ? 'docker pull company/backend:latest\ndocker compose up -d' : 'git pull origin main\npip install -r requirements.txt'}
+                rows={6}
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -515,13 +516,16 @@ const Deploy = () => {
                   fontFamily: 'monospace',
                   outline: 'none',
                   transition: 'border-color 0.2s',
-                  resize: 'vertical'
+                  resize: 'vertical',
+                  backgroundColor: '#fafafa'
                 }}
                 onFocus={(e) => {
                   e.target.style.borderColor = '#3b82f6'
+                  e.target.style.backgroundColor = 'white'
                 }}
                 onBlur={(e) => {
                   e.target.style.borderColor = '#d1d5db'
+                  e.target.style.backgroundColor = '#fafafa'
                 }}
               />
               <div style={{
@@ -529,7 +533,7 @@ const Deploy = () => {
                 color: '#6b7280',
                 marginTop: '4px'
               }}>
-                {deployType === 'docker' ? 'Docker pull and deployment commands' : 'Custom deployment commands (auto-filled for Source Deploy)'}
+                {deployType === 'docker' ? 'Docker pull and deployment commands' : 'Custom deployment commands. Artifact upload and service restart are automatic.'}
               </div>
             </div>
 

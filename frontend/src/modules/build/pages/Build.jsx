@@ -56,8 +56,8 @@ const Build = () => {
   const handleStartBuild = async (e) => {
     e.preventDefault()
 
-    if (!projectId || !projectName || !branch || !gitUrl) {
-      setError('Please fill in all required fields')
+    if (!projectId || !projectName || !branch || !gitUrl || !buildScript) {
+      setError('Please fill in all required fields including Build Script')
       return
     }
 
@@ -94,7 +94,7 @@ const Build = () => {
 
     // Auto-fill build script based on deploy type
     if (newType === 'source') {
-      setBuildScript('')
+      setBuildScript('pip install -r requirements.txt\npytest')
     } else if (newType === 'docker') {
       setBuildScript('docker build -t company/backend:latest .\ndocker push company/backend:latest')
     }
@@ -307,13 +307,14 @@ const Build = () => {
                 color: '#374151',
                 marginBottom: '6px'
               }}>
-                Build Script (Optional - Auto-filled based on Deploy Type)
+                Build Script <span style={{color: '#dc2626'}}>*</span>
               </label>
               <textarea
                 value={buildScript}
                 onChange={(e) => setBuildScript(e.target.value)}
-                placeholder={deployType === 'docker' ? 'docker build -t company/backend:latest .\ndocker push company/backend:latest' : 'pip install -r requirements.txt\nnpm run build\nmvn clean package'}
-                rows={6}
+                placeholder={deployType === 'docker' ? 'docker build -t company/backend:latest .\ndocker push company/backend:latest' : 'pip install -r requirements.txt\npytest'}
+                rows={8}
+                required
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -323,13 +324,16 @@ const Build = () => {
                   fontFamily: 'monospace',
                   outline: 'none',
                   transition: 'border-color 0.2s',
-                  resize: 'vertical'
+                  resize: 'vertical',
+                  backgroundColor: '#fafafa'
                 }}
                 onFocus={(e) => {
                   e.target.style.borderColor = '#3b82f6'
+                  e.target.style.backgroundColor = 'white'
                 }}
                 onBlur={(e) => {
                   e.target.style.borderColor = '#d1d5db'
+                  e.target.style.backgroundColor = '#fafafa'
                 }}
               />
               <div style={{
@@ -337,7 +341,7 @@ const Build = () => {
                 color: '#6b7280',
                 marginTop: '4px'
               }}>
-                {deployType === 'docker' ? 'Docker build and push commands' : 'Custom build commands (leave empty for default)'}
+                {deployType === 'docker' ? 'Docker build and push commands' : 'Build commands for your language (Python: pip install, NodeJS: npm install, Java: mvn package, Go: go build)'}
               </div>
             </div>
 

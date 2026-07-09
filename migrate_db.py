@@ -23,6 +23,24 @@ except sqlite3.OperationalError as e:
     else:
         print(f"Error adding build_script: {e}")
 
+try:
+    cursor.execute("ALTER TABLE builds ADD COLUMN artifact_path TEXT")
+    print("Added artifact_path column to builds table")
+except sqlite3.OperationalError as e:
+    if "duplicate column name" in str(e):
+        print("artifact_path column already exists in builds table")
+    else:
+        print(f"Error adding artifact_path: {e}")
+
+try:
+    cursor.execute("ALTER TABLE builds ADD COLUMN artifact_type VARCHAR(50)")
+    print("Added artifact_type column to builds table")
+except sqlite3.OperationalError as e:
+    if "duplicate column name" in str(e):
+        print("artifact_type column already exists in builds table")
+    else:
+        print(f"Error adding artifact_type: {e}")
+
 # Add new column to deploys table
 try:
     cursor.execute("ALTER TABLE deploys ADD COLUMN deploy_type VARCHAR(50) DEFAULT 'source'")
@@ -32,6 +50,15 @@ except sqlite3.OperationalError as e:
         print("deploy_type column already exists in deploys table")
     else:
         print(f"Error adding deploy_type to deploys: {e}")
+
+try:
+    cursor.execute("ALTER TABLE deploys ADD COLUMN deploy_script TEXT")
+    print("Added deploy_script column to deploys table")
+except sqlite3.OperationalError as e:
+    if "duplicate column name" in str(e):
+        print("deploy_script column already exists in deploys table")
+    else:
+        print(f"Error adding deploy_script to deploys: {e}")
 
 conn.commit()
 conn.close()
