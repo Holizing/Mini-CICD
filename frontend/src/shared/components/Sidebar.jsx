@@ -6,6 +6,7 @@ function Sidebar() {
 
   return (
     <aside
+      className="app-sidebar"
       style={{
         width: '240px',
         minHeight: 'calc(100vh - 64px)',
@@ -14,8 +15,9 @@ function Sidebar() {
         backgroundColor: '#111827',
       }}
     >
-      <nav style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+      <nav className="app-sidebar__nav" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
         <Link
+          className="app-sidebar__link"
           to="/settings"
           style={{
             padding: '12px 24px',

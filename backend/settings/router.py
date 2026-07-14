@@ -1,12 +1,17 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from backend.auth.dependencies import get_current_admin
 from backend.common.database import get_db
 from backend.settings import service
 from backend.settings.schemas import SettingsResponse, SettingsUpdate
 
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+router = APIRouter(
+    prefix="/settings",
+    tags=["settings"],
+    dependencies=[Depends(get_current_admin)],
+)
 
 
 @router.get("", response_model=SettingsResponse)

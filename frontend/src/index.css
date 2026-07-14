@@ -28,3 +28,51 @@ button:disabled {
 a {
   color: inherit;
 }
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 720px) {
+  .app-navbar {
+    padding: 0 14px !important;
+  }
+
+  .app-navbar__account {
+    gap: 8px !important;
+  }
+
+  .app-navbar__page-title,
+  .app-navbar__divider {
+    display: none !important;
+  }
+
+  .app-navbar__username {
+    max-width: 80px !important;
+  }
+
+  .app-shell {
+    flex-direction: column;
+  }
+
+  .app-sidebar {
+    width: 100% !important;
+    min-height: auto !important;
+    padding: 0 !important;
+  }
+
+  .app-sidebar__nav {
+    flex-direction: row !important;
+  }
+
+  .app-sidebar__link {
+    flex: 1;
+    padding: 12px 16px !important;
+  }
+
+  .app-shell__content {
+    padding: 18px 14px !important;
+  }
+}
