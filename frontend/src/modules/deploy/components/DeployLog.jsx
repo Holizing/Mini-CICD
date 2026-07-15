@@ -1,6 +1,6 @@
 import React from 'react'
 
-const DeployLog = ({ log, loading }) => {
+const DeployLog = React.memo(({ log, loading }) => {
   if (loading) {
     return (
       <div style={{
@@ -56,6 +56,6 @@ const DeployLog = ({ log, loading }) => {
       {log}
     </div>
   )
-}
+})
 
 export default DeployLog

@@ -56,41 +56,58 @@ class SSHClient:
         except Exception as e:
             return False, f"SSH connection failed: {str(e)}"
 
-    def execute_command(self, command: str, use_pty: bool = False, sudo_password: Optional[str] = None) -> Tuple[bool, str, str]:
+    def execute_command(self, command: str, use_pty: bool = False) -> Tuple[bool, str, str]:
         """
         Execute a command on the remote server.
 
         Args:
             command: Command to execute
             use_pty: Whether to allocate a pseudo-terminal (default: False)
-            sudo_password: Password to use for sudo commands (optional)
 
         Returns:
             Tuple of (success: bool, stdout: str, stderr: str)
         """
+        print(f"[DEBUG] ENTER execute_command: {command}")
+        print(f"[DEBUG] use_pty: {use_pty}")
+        
         if not self.client:
+            print(f"[DEBUG] SSH client not connected")
             return False, "", "SSH client not connected"
 
         try:
-            # Only use PTY if explicitly requested (for interactive commands)
-            # For simple commands like sudo cp, PTY is not needed and can cause hanging
-            stdin, stdout, stderr = self.client.exec_command(command, timeout=300, get_pty=use_pty)
+            # Automatically add -n flag to sudo commands for passwordless sudo
+            # This prevents sudo from prompting for password even if NOPASSWD is configured
+            if 'sudo' in command and '-n' not in command.split():
+                # Insert -n after sudo (e.g., "sudo systemctl" -> "sudo -n systemctl")
+                command = command.replace('sudo', 'sudo -n', 1)
+                print(f"[DEBUG] Modified command with -n flag: {command}")
 
-            # If command uses sudo and password is provided, send it to stdin
-            if sudo_password and 'sudo' in command:
-                stdin.write(sudo_password + '\n')
-                stdin.flush()
+            # Only use PTY if explicitly requested (for interactive commands)
+            # For simple commands, PTY is not needed and can cause hanging
+            print(f"[DEBUG] Before exec_command")
+            stdin, stdout, stderr = self.client.exec_command(command, timeout=300, get_pty=use_pty)
+            print(f"[DEBUG] After exec_command")
 
             # Read output
+            print(f"[DEBUG] Before stdout.read()")
             stdout_str = stdout.read().decode('utf-8')
+            print(f"[DEBUG] After stdout.read()")
+            print(f"[DEBUG] Before stderr.read()")
             stderr_str = stderr.read().decode('utf-8')
+            print(f"[DEBUG] After stderr.read()")
 
             # Get exit status
+            print(f"[DEBUG] Before recv_exit_status")
             exit_status = stdout.channel.recv_exit_status()
+            print(f"[DEBUG] After recv_exit_status: {exit_status}")
             success = exit_status == 0
 
+            print(f"[DEBUG] EXIT execute_command: success={success}")
             return success, stdout_str, stderr_str
         except Exception as e:
+            print(f"[DEBUG] Exception in execute_command: {str(e)}")
+            import traceback
+            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
             return False, "", f"Command execution failed: {str(e)}"
 
     def upload_file(self, local_path: str, remote_path: str) -> Tuple[bool, str]:
@@ -131,7 +148,16 @@ class SSHClient:
 
         import os
 
+        # Exclude directories from upload (dependencies, cache, etc.)
+        exclude_dirs = {'.git', 'node_modules', 'venv', '__pycache__', 'target', 'build', 'dist', 'coverage', 'vendor', '.next', '.venv', 'tmp', 'cache', 'logs', '.idea', '.vscode'}
+
         try:
+            # Check if local directory exists
+            if not os.path.exists(local_dir):
+                return False, f"Local directory does not exist: {local_dir}"
+            if not os.path.isdir(local_dir):
+                return False, f"Local path is not a directory: {local_dir}"
+
             sftp = self.client.open_sftp()
 
             # Create remote directory if it doesn't exist
@@ -141,14 +167,22 @@ class SSHClient:
                 # Directory doesn't exist, create it recursively
                 self._mkdir_recursive(sftp, remote_dir)
 
-            # Upload all files in directory
+            # First pass: create all directory structure
             for root, dirs, files in os.walk(local_dir):
+                # Exclude unwanted directories
+                dirs[:] = [d for d in dirs if d not in exclude_dirs]
+                
                 # Calculate relative path
                 rel_path = os.path.relpath(root, local_dir)
                 if rel_path == '.':
                     remote_path = remote_dir
                 else:
                     remote_path = os.path.join(remote_dir, rel_path).replace('\\', '/')
+                    # Ensure the remote subdirectory exists
+                    try:
+                        sftp.stat(remote_path)
+                    except IOError:
+                        self._mkdir_recursive(sftp, remote_path)
 
                 # Create subdirectories
                 for dir_name in dirs:
@@ -156,18 +190,63 @@ class SSHClient:
                     try:
                         sftp.stat(full_remote_dir)
                     except IOError:
-                        sftp.mkdir(full_remote_dir)
+                        self._mkdir_recursive(sftp, full_remote_dir)
+
+            # Second pass: upload all files
+            for root, dirs, files in os.walk(local_dir):
+                # Exclude unwanted directories
+                dirs[:] = [d for d in dirs if d not in exclude_dirs]
+                
+                # Calculate relative path
+                rel_path = os.path.relpath(root, local_dir)
+                print(f"[DEBUG] rel_path = {rel_path}")
+                if rel_path == '.':
+                    remote_path = remote_dir
+                    print(f"[DEBUG] remote_path = {remote_path} (root)")
+                else:
+                    remote_path = os.path.join(remote_dir, rel_path).replace('\\', '/')
+                    print(f"[DEBUG] remote_path = {remote_path} (subdir)")
 
                 # Upload files
                 for file_name in files:
                     local_file = os.path.join(root, file_name)
                     remote_file = os.path.join(remote_path, file_name).replace('\\', '/')
+                    
+                    print(f"[DEBUG] local_file = {local_file}")
+                    print(f"[DEBUG] remote_file = {remote_file}")
+                    
+                    # Check remote parent directory
+                    import posixpath
+                    remote_parent = posixpath.dirname(remote_file)
+                    print(f"[DEBUG] remote_parent = {remote_parent}")
+                    
+                    try:
+                        sftp.stat(remote_parent)
+                        print(f"[DEBUG] remote_parent exists: {repr(remote_parent)}")
+                    except IOError as e:
+                        print(f"[DEBUG] remote_parent does not exist: {repr(remote_parent)}")
+                        print(f"[DEBUG] Creating remote_parent: {repr(remote_parent)}")
+                        self._mkdir_recursive(sftp, remote_parent)
+                        print(f"[DEBUG] remote_parent creation completed, verifying: {repr(remote_parent)}")
+                        # Verify it was actually created
+                        try:
+                            sftp.stat(remote_parent)
+                            print(f"[DEBUG] remote_parent verified exists: {repr(remote_parent)}")
+                        except IOError as e:
+                            print(f"[DEBUG] remote_parent still does not exist after creation: {repr(remote_parent)}")
+                            print(f"[DEBUG] Error: {str(e)}")
+                            raise Exception(f"Failed to create remote_parent {repr(remote_parent)}")
+                    
+                    print(f"[DEBUG] Uploading file: {local_file} -> {remote_file}")
+                    print(f"[DEBUG] Final verification before upload: {repr(remote_file)}")
                     sftp.put(local_file, remote_file)
+                    print(f"[DEBUG] File uploaded successfully")
 
             sftp.close()
             return True, ""
         except Exception as e:
-            return False, f"Directory upload failed: {str(e)}"
+            import traceback
+            return False, f"Directory upload failed: {str(e)}\nTraceback:\n{traceback.format_exc()}"
 
     def _mkdir_recursive(self, sftp, path: str):
         """
@@ -177,16 +256,32 @@ class SSHClient:
             sftp: SFTP client
             path: Path to create
         """
-        import os
-        dirs = path.split('/')
+        print(f"[DEBUG] ENTER _mkdir_recursive: {repr(path)}")
+        import posixpath
+        dirs = [d for d in path.split('/') if d]  # Filter out empty strings
+        print(f"[DEBUG] Split path: {dirs}")
         current_dir = ''
         for dir_name in dirs:
-            if dir_name:
-                current_dir += '/' + dir_name if current_dir else dir_name
+            # Use posixpath.join to properly construct absolute paths
+            current_dir = posixpath.join(current_dir, dir_name) if current_dir else '/' + dir_name
+            print(f"[DEBUG] Checking: {repr(current_dir)}")
+            try:
+                sftp.stat(current_dir)
+                print(f"[DEBUG] Exists: {repr(current_dir)}")
+            except IOError:
+                print(f"[DEBUG] Creating: {repr(current_dir)}")
                 try:
-                    sftp.stat(current_dir)
-                except IOError:
                     sftp.mkdir(current_dir)
+                    print(f"[DEBUG] mkdir() returned for: {repr(current_dir)}")
+                    # Verify it was actually created
+                    sftp.stat(current_dir)
+                    print(f"[DEBUG] Verified created: {repr(current_dir)}")
+                except Exception as e:
+                    print(f"[DEBUG] Failed to create {repr(current_dir)}: {str(e)}")
+                    import traceback
+                    print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+                    raise
+        print(f"[DEBUG] EXIT _mkdir_recursive: {repr(path)}")
 
     def close(self):
         """Close SSH connection."""

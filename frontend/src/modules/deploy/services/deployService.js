@@ -20,4 +20,14 @@ export const deployService = {
     const response = await api.get('/deploy/history', { params })
     return response.data
   },
+
+  getDeployStages: async (deployId) => {
+    const response = await api.get(`/deploy/stages/${deployId}`)
+    return response.data
+  },
+
+  getStageLog: async (deployId, stageName) => {
+    const response = await api.get(`/deploy/stage/${deployId}/${encodeURIComponent(stageName)}`)
+    return response.data
+  },
 }

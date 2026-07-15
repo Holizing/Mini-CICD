@@ -20,4 +20,14 @@ export const buildService = {
     const response = await api.get('/build/history', { params })
     return response.data
   },
+
+  getBuildStages: async (buildId) => {
+    const response = await api.get(`/build/stages/${buildId}`)
+    return response.data
+  },
+
+  getStageLog: async (buildId, stageName) => {
+    const response = await api.get(`/build/stage/${buildId}/${encodeURIComponent(stageName)}`)
+    return response.data
+  },
 }
