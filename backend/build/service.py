@@ -14,9 +14,10 @@ from backend.build.utils import get_log_path
 class BuildService:
     def __init__(self, db: Session, workspace_dir: str, logs_dir: str):
         self.db = db
-        self.workspace_dir = workspace_dir
+        # Convert workspace_dir to absolute path
+        self.workspace_dir = os.path.abspath(workspace_dir)
         self.logs_dir = logs_dir
-        self.runner = BuildRunner(workspace_dir, logs_dir, db_session=db)
+        self.runner = BuildRunner(self.workspace_dir, logs_dir, db_session=db)
 
     def start_build(self, request: BuildStartRequest, background_tasks: BackgroundTasks) -> BuildResponse:
         """
@@ -76,21 +77,40 @@ class BuildService:
         self.runner._log(build.log_path, f"HTTP response sent (Request duration: {request_duration:.4f}s)")
         
         # Execute build asynchronously in background
-        background_tasks.add_task(
-            self._execute_build_task,
-            build.id,
-            request.git_url,
-            request.branch,
-            request.build_script,
-            request.build_type,
-            request.docker_mode,
-            request.image_name,
-            request.image_tag,
-            request.dockerfile_path,
-            request.build_context,
-            request.docker_image,
-            request.docker_compose_file
-        )
+        def run_build_with_error_handling():
+            try:
+                self._execute_build_task(
+                    build.id,
+                    request.git_url,
+                    request.branch,
+                    request.build_script,
+                    request.build_type,
+                    request.docker_mode,
+                    request.image_name,
+                    request.image_tag,
+                    request.dockerfile_path,
+                    request.build_context,
+                    request.docker_image,
+                    request.docker_compose_file
+                )
+            except Exception as e:
+                # Log any uncaught exceptions
+                import traceback
+                db_error = SessionLocal()
+                try:
+                    build_error = db_error.query(Build).filter(Build.id == build.id).first()
+                    if build_error:
+                        build_error.status = "failed"
+                        build_error.error_message = f"Critical error: {str(e)}"
+                        db_error.commit()
+                        if build_error.log_path:
+                            with open(build_error.log_path, "a", encoding="utf-8") as f:
+                                f.write(f"\nCRITICAL ERROR: {str(e)}\n")
+                                f.write(f"Traceback: {traceback.format_exc()}\n")
+                finally:
+                    db_error.close()
+        
+        background_tasks.add_task(run_build_with_error_handling)
 
         return self._build_to_response(build)
 

@@ -34,10 +34,12 @@ class SpringBootJarStrategy(DeploymentStrategy):
                 log_func("Error: No artifact path provided for JAR deployment")
                 return False
             
-            # Get artifact name from path
-            artifact_name = artifact_path.split('/')[-1]
+            # Get artifact name from local path (works on both Windows and Linux)
+            import os
+            artifact_name = os.path.basename(artifact_path)
             
             log_func(f"Deploying Spring Boot JAR: {artifact_name}")
+            log_func(f"Local artifact path: {artifact_path}")
             log_func(f"Deploy path: {deploy_path}")
             log_func(f"Service name: {service_name}")
             
@@ -52,7 +54,7 @@ class SpringBootJarStrategy(DeploymentStrategy):
             
             # Stop service
             log_func(f"Stopping service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl stop {service_name} || true")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl stop {service_name} || true")
             log_func(f"✓ Success")
             
             # Remove old JAR
@@ -84,7 +86,7 @@ class SpringBootJarStrategy(DeploymentStrategy):
             
             # Start service
             log_func(f"Starting service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl start {service_name}")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl start {service_name}")
             if not success:
                 log_func(f"✗ Failed to start service")
                 log_func(f"  stderr: {stderr}")
@@ -154,8 +156,34 @@ class SpringBootWarStrategy(DeploymentStrategy):
                 log_func("Error: No artifact path provided for WAR deployment")
                 return False
             
-            # Get artifact name from path
-            artifact_name = artifact_path.split('/')[-1]
+            # Handle directory artifacts - search for WAR files in target/
+            import os
+            if os.path.isdir(artifact_path):
+                log_func(f"Artifact path is a directory: {artifact_path}")
+                log_func(f"Searching for WAR files in artifact_path/target/...")
+                target_dir = os.path.join(artifact_path, 'target')
+                if os.path.isdir(target_dir):
+                    war_files = []
+                    for file in os.listdir(target_dir):
+                        if file.endswith('.war'):
+                            war_path = os.path.join(target_dir, file)
+                            war_files.append(war_path)
+                            log_func(f"Found WAR file: {war_path}")
+                    
+                    if war_files:
+                        # Sort by modification time, newest first
+                        war_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                        artifact_path = war_files[0]
+                        log_func(f"Using newest WAR file: {artifact_path}")
+                    else:
+                        log_func(f"ERROR: No WAR artifact found in {target_dir}")
+                        return False
+                else:
+                    log_func(f"ERROR: target directory not found: {target_dir}")
+                    return False
+            
+            # Get artifact name from local path (works on both Windows and Linux)
+            artifact_name = os.path.basename(artifact_path)
             
             log_func(f"Deploying WAR: {artifact_name}")
             log_func(f"Deploy path: {deploy_path}")
@@ -172,7 +200,7 @@ class SpringBootWarStrategy(DeploymentStrategy):
             
             # Stop Tomcat
             log_func(f"Stopping Tomcat service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl stop {service_name} || true")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl stop {service_name} || true")
             log_func(f"✓ Success")
             
             # Remove old WAR
@@ -209,7 +237,7 @@ class SpringBootWarStrategy(DeploymentStrategy):
             
             # Start Tomcat
             log_func(f"Starting Tomcat service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl start {service_name}")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl start {service_name}")
             if not success:
                 log_func(f"✗ Failed to start Tomcat service")
                 log_func(f"  stderr: {stderr}")
@@ -246,7 +274,8 @@ class SpringBootWarStrategy(DeploymentStrategy):
         
         # Check if WAR file exists
         if context.artifact_path:
-            artifact_name = context.artifact_path.split('/')[-1]
+            import os
+            artifact_name = os.path.basename(context.artifact_path)
             log_func(f"Validating WAR file existence...")
             success, stdout, stderr = context.ssh_client.execute_command(f"test -f {context.deploy_path}/{artifact_name}")
             if success:
@@ -289,7 +318,8 @@ class JakartaEEStrategy(DeploymentStrategy):
                 log_func("Error: No artifact path provided for Jakarta EE deployment")
                 return False
             
-            artifact_name = artifact_path.split('/')[-1]
+            import os
+            artifact_name = os.path.basename(artifact_path)
             
             log_func(f"Deploying Jakarta EE artifact: {artifact_name}")
             log_func(f"Deploy path: {deploy_path}")
@@ -306,7 +336,7 @@ class JakartaEEStrategy(DeploymentStrategy):
             
             # Stop application server
             log_func(f"Stopping application server {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl stop {service_name} || true")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl stop {service_name} || true")
             log_func(f"✓ Success")
             
             # Remove old artifact
@@ -329,7 +359,7 @@ class JakartaEEStrategy(DeploymentStrategy):
             
             # Start application server
             log_func(f"Starting application server {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl start {service_name}")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl start {service_name}")
             if not success:
                 log_func(f"✗ Failed to start application server")
                 log_func(f"  stderr: {stderr}")
@@ -397,7 +427,8 @@ class QuarkusStrategy(DeploymentStrategy):
                 log_func("Error: No artifact path provided for Quarkus deployment")
                 return False
             
-            artifact_name = artifact_path.split('/')[-1]
+            import os
+            artifact_name = os.path.basename(artifact_path)
             
             log_func(f"Deploying Quarkus artifact: {artifact_name}")
             log_func(f"Deploy path: {deploy_path}")
@@ -414,7 +445,7 @@ class QuarkusStrategy(DeploymentStrategy):
             
             # Stop service
             log_func(f"Stopping service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl stop {service_name} || true")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl stop {service_name} || true")
             log_func(f"✓ Success")
             
             # Remove old artifact
@@ -446,7 +477,7 @@ class QuarkusStrategy(DeploymentStrategy):
             
             # Start service
             log_func(f"Starting service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl start {service_name}")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl start {service_name}")
             if not success:
                 log_func(f"✗ Failed to start service")
                 log_func(f"  stderr: {stderr}")
@@ -514,7 +545,8 @@ class MicronautStrategy(DeploymentStrategy):
                 log_func("Error: No artifact path provided for Micronaut deployment")
                 return False
             
-            artifact_name = artifact_path.split('/')[-1]
+            import os
+            artifact_name = os.path.basename(artifact_path)
             
             log_func(f"Deploying Micronaut artifact: {artifact_name}")
             log_func(f"Deploy path: {deploy_path}")
@@ -531,7 +563,7 @@ class MicronautStrategy(DeploymentStrategy):
             
             # Stop service
             log_func(f"Stopping service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl stop {service_name} || true")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl stop {service_name} || true")
             log_func(f"✓ Success")
             
             # Remove old artifact
@@ -563,7 +595,7 @@ class MicronautStrategy(DeploymentStrategy):
             
             # Start service
             log_func(f"Starting service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl start {service_name}")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl start {service_name}")
             if not success:
                 log_func(f"✗ Failed to start service")
                 log_func(f"  stderr: {stderr}")

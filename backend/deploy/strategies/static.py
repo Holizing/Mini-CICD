@@ -55,7 +55,7 @@ class HugoStrategy(DeploymentStrategy):
             
             # Restart nginx
             log_func("Restarting nginx...")
-            ssh.execute_command("sudo systemctl restart nginx || sudo systemctl reload nginx")
+            ssh.execute_command("sudo -n systemctl restart nginx || sudo -n systemctl reload nginx")
             
             return True
             
@@ -75,7 +75,7 @@ class HugoStrategy(DeploymentStrategy):
         
         # Check nginx service status
         log_func(f"Validating nginx service...")
-        success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active nginx")
+        success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active nginx")
         if success and "active" in stdout:
             log_func(f"✓ Nginx service active (running)")
         else:
@@ -147,7 +147,7 @@ class JekyllStrategy(DeploymentStrategy):
             
             # Restart nginx
             log_func("Restarting nginx...")
-            ssh.execute_command("sudo systemctl restart nginx || sudo systemctl reload nginx")
+            ssh.execute_command("sudo -n systemctl restart nginx || sudo -n systemctl reload nginx")
             
             return True
             
@@ -167,7 +167,7 @@ class JekyllStrategy(DeploymentStrategy):
         
         # Check nginx service status
         log_func(f"Validating nginx service...")
-        success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active nginx")
+        success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active nginx")
         if success and "active" in stdout:
             log_func(f"✓ Nginx service active (running)")
         else:
@@ -243,7 +243,7 @@ class GatsbyStrategy(DeploymentStrategy):
             
             # Restart nginx
             log_func("Restarting nginx...")
-            ssh.execute_command("sudo systemctl restart nginx || sudo systemctl reload nginx")
+            ssh.execute_command("sudo -n systemctl restart nginx || sudo -n systemctl reload nginx")
             
             return True
             
@@ -263,7 +263,7 @@ class GatsbyStrategy(DeploymentStrategy):
         
         # Check nginx service status
         log_func(f"Validating nginx service...")
-        success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active nginx")
+        success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active nginx")
         if success and "active" in stdout:
             log_func(f"✓ Nginx service active (running)")
         else:
@@ -339,7 +339,7 @@ class AstroStrategy(DeploymentStrategy):
             
             # Restart nginx
             log_func("Restarting nginx...")
-            ssh.execute_command("sudo systemctl restart nginx || sudo systemctl reload nginx")
+            ssh.execute_command("sudo -n systemctl restart nginx || sudo -n systemctl reload nginx")
             
             return True
             
@@ -359,7 +359,7 @@ class AstroStrategy(DeploymentStrategy):
         
         # Check nginx service status
         log_func(f"Validating nginx service...")
-        success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active nginx")
+        success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active nginx")
         if success and "active" in stdout:
             log_func(f"✓ Nginx service active (running)")
         else:
@@ -435,7 +435,7 @@ class DocusaurusStrategy(DeploymentStrategy):
             
             # Restart nginx
             log_func("Restarting nginx...")
-            ssh.execute_command("sudo systemctl restart nginx || sudo systemctl reload nginx")
+            ssh.execute_command("sudo -n systemctl restart nginx || sudo -n systemctl reload nginx")
             
             return True
             
@@ -455,7 +455,7 @@ class DocusaurusStrategy(DeploymentStrategy):
         
         # Check nginx service status
         log_func(f"Validating nginx service...")
-        success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active nginx")
+        success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active nginx")
         if success and "active" in stdout:
             log_func(f"✓ Nginx service active (running)")
         else:
@@ -531,7 +531,7 @@ class MkDocsStrategy(DeploymentStrategy):
             
             # Restart nginx
             log_func("Restarting nginx...")
-            ssh.execute_command("sudo systemctl restart nginx || sudo systemctl reload nginx")
+            ssh.execute_command("sudo -n systemctl restart nginx || sudo -n systemctl reload nginx")
             
             return True
             
@@ -551,7 +551,7 @@ class MkDocsStrategy(DeploymentStrategy):
         
         # Check nginx service status
         log_func(f"Validating nginx service...")
-        success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active nginx")
+        success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active nginx")
         if success and "active" in stdout:
             log_func(f"✓ Nginx service active (running)")
         else:

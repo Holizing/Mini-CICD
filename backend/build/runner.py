@@ -189,8 +189,29 @@ class BuildRunner:
         """
         self._log(log_file, f"Detecting build artifact...")
 
+        # First, specifically check for WAR files in target/ directory (Maven builds)
+        target_dir = os.path.join(project_root, 'target')
+        if os.path.isdir(target_dir):
+            self._log(log_file, f"Checking target directory for WAR files: {target_dir}")
+            war_files = []
+            for file in os.listdir(target_dir):
+                if file.endswith('.war'):
+                    war_path = os.path.join(target_dir, file)
+                    war_files.append(war_path)
+                    self._log(log_file, f"Found WAR file: {war_path}")
+            
+            if war_files:
+                # Sort by modification time, newest first
+                war_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                artifact_path = war_files[0]
+                self._log(log_file, f"Using newest WAR file: {artifact_path}")
+                # Return relative path from workspace_dir
+                rel_path = os.path.relpath(artifact_path, self.workspace_dir)
+                return rel_path, "war"
+
         # Exclude directories from artifact search (dependencies, cache, etc.)
-        exclude_dirs = {'.git', 'node_modules', 'venv', '__pycache__', 'target', 'build', 'dist', 'coverage', 'vendor', '.next', '.venv', 'tmp', 'cache', 'logs'}
+        # Note: 'target' is NOT excluded here since we already checked it above
+        exclude_dirs = {'.git', 'node_modules', 'venv', '__pycache__', 'build', 'dist', 'coverage', 'vendor', '.next', '.venv', 'tmp', 'cache', 'logs'}
 
         # First, check for artifact directories (build/, dist/, etc.) - HIGHEST PRIORITY for Node.js/static sites
         for artifact_dir in self.artifact_directories:
@@ -223,7 +244,9 @@ class BuildRunner:
                 self._log(log_file, f"Exactly one artifact file found: {artifact_path}")
                 # Return relative path from workspace_dir
                 rel_path = os.path.relpath(artifact_path, self.workspace_dir)
-                return rel_path, "file"
+                # Determine artifact type based on extension
+                artifact_type = "war" if artifact_path.endswith('.war') else "file"
+                return rel_path, artifact_type
 
             # If multiple artifacts found, prefer the one in target/ (Maven) or build/ (Gradle)
             preferred_dirs = ['target', 'build', 'dist', 'out']
@@ -233,14 +256,16 @@ class BuildRunner:
                         self._log(log_file, f"Multiple artifacts found, using preferred directory: {artifact_path}")
                         # Return relative path from workspace_dir
                         rel_path = os.path.relpath(artifact_path, self.workspace_dir)
-                        return rel_path, "file"
+                        artifact_type = "war" if artifact_path.endswith('.war') else "file"
+                        return rel_path, artifact_type
 
             # Fallback to the first artifact
             artifact_path = found_artifacts[0]
             self._log(log_file, f"Multiple artifacts found, using first: {artifact_path}")
             # Return relative path from workspace_dir
             rel_path = os.path.relpath(artifact_path, self.workspace_dir)
-            return rel_path, "file"
+            artifact_type = "war" if artifact_path.endswith('.war') else "file"
+            return rel_path, artifact_type
 
         self._log(log_file, f"No artifacts found")
         return None, None
@@ -681,6 +706,7 @@ class BuildRunner:
                 artifact_path = rel_path
                 artifact_type = "directory"
                 self._log_stage("Detect Artifact", f"Using project root as artifact: {artifact_path}")
+                self._log(log_file, f"WARNING: No WAR/JAR artifact found. Please ensure the build completed successfully.")
             self._complete_stage("Detect Artifact", "success")
 
         # Step 6: Run project detection for deployment recommendations

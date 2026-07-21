@@ -15,7 +15,8 @@ class DeployService:
     def __init__(self, db: Session, logs_dir: str, workspace_dir: str = "workspace"):
         self.db = db
         self.logs_dir = logs_dir
-        self.workspace_dir = workspace_dir
+        # Convert workspace_dir to absolute path
+        self.workspace_dir = os.path.abspath(workspace_dir)
 
         # Stage tracking
         self.current_deploy_id = None
@@ -202,7 +203,27 @@ class DeployService:
             self._log(deploy.log_path, f"Service: {request.service_name}")
 
         # Execute deploy in background thread
-        thread = threading.Thread(target=self._execute_deploy_sync, args=(deploy, request))
+        def run_deploy_with_error_handling():
+            try:
+                self._execute_deploy_sync(deploy, request)
+            except Exception as e:
+                # Log any uncaught exceptions
+                self._log(deploy.log_path, f"CRITICAL ERROR: {str(e)}")
+                import traceback
+                self._log(deploy.log_path, f"Traceback: {traceback.format_exc()}")
+                
+                # Update deploy record as failed
+                db_error = SessionLocal()
+                try:
+                    deploy_error = db_error.query(Deploy).filter(Deploy.id == deploy.id).first()
+                    if deploy_error:
+                        deploy_error.status = "failed"
+                        deploy_error.error_message = f"Critical error: {str(e)}"
+                        db_error.commit()
+                finally:
+                    db_error.close()
+        
+        thread = threading.Thread(target=run_deploy_with_error_handling)
         thread.daemon = True
         thread.start()
 
@@ -219,6 +240,9 @@ class DeployService:
         """
         start_time = time.time()
         log_file = deploy.log_path
+
+        self._log(log_file, f"[DEBUG] _execute_deploy_sync started for deploy #{deploy.id}")
+        self._log(log_file, f"[DEBUG] Request details: deploy_type={request.deploy_type}, server={request.server_ip}")
 
         try:
             # Validate Build stage
@@ -388,6 +412,12 @@ class DeployService:
                     artifact_path = os.path.join(self.workspace_dir, artifact_path)
                     self._log(log_file, f"Converted artifact path to absolute: {artifact_path}")
 
+            # Debug logging before upload
+            self._log(log_file, f"DEBUG: artifact_path = {artifact_path}")
+            self._log(log_file, f"DEBUG: exists = {os.path.exists(artifact_path) if artifact_path else 'N/A'}")
+            self._log(log_file, f"DEBUG: isfile = {os.path.isfile(artifact_path) if artifact_path else 'N/A'}")
+            self._log(log_file, f"DEBUG: isdir = {os.path.isdir(artifact_path) if artifact_path else 'N/A'}")
+
             # Create deployment context
             context = DeploymentContext(
                 ssh_client=ssh,
@@ -421,28 +451,9 @@ class DeployService:
                 raise Exception("Strategy-based deployment failed")
         else:
             self._log(log_file, f"No suitable deployment strategy found for framework={framework}, runtime={runtime}")
-            self._log(log_file, f"Falling back to default deployment")
-
-            # Fallback to default deployment
-            if build and build.artifact_path and build.artifact_type != "docker_image":
-                self._log(log_file, f"Step 4: Uploading artifact...")
-                artifact_type = build.artifact_type or "file"
-                self._upload_artifact(
-                    ssh, build.artifact_path, artifact_type,
-                    request.deploy_path, request.service_name, log_file
-                )
-                self._log(log_file, f"Step 4: Artifact upload completed")
-                self._log_stage("Upload Artifact", "Artifact uploaded successfully (fallback)")
-            else:
-                self._log_stage("Upload Artifact", "No artifact to upload (fallback)")
-            self._complete_stage("Upload Artifact", "success")
-
-            # Execute Deploy Script stage (fallback)
-            self._start_stage("Execute Deploy Script")
-            self._log_stage("Execute Deploy Script", "Executing default deployment...")
-            self._execute_default_deployment(ssh, request, log_file)
-            self._log_stage("Execute Deploy Script", "Default deployment completed")
-            self._complete_stage("Execute Deploy Script", "success")
+            self._log(log_file, f"ERROR: Unsupported framework/runtime combination")
+            self._log(log_file, f"Supported frameworks: {[s.name for s in get_registry()._strategies]}")
+            raise Exception(f"No deployment strategy found for framework={framework}, runtime={runtime}. Please ensure your project type is supported.")
 
     def _execute_docker_deploy(
         self,
@@ -672,56 +683,6 @@ class DeployService:
         
         self._log(log_file, f"All commands completed successfully")
 
-    def _execute_default_deployment(self, ssh: SSHClient, request: DeployStartRequest, log_file: str) -> None:
-        """
-        Execute default Python deployment (backward compatibility).
-        
-        Args:
-            ssh: SSH client instance
-            request: Deploy start request
-            log_file: Log file path
-        """
-        self._log(log_file, f"Executing default Python deployment...")
-        
-        # Change to deploy directory
-        self._log(log_file, f"Changing to deploy directory: {request.deploy_path}")
-        success, stdout, stderr = ssh.execute_command(f"cd {request.deploy_path}")
-        if not success:
-            raise Exception(f"Failed to change directory: {stderr}")
-        self._log(log_file, f"Changed to deploy directory")
-        
-        # Git pull
-        self._log(log_file, f"Pulling latest changes from branch {request.branch}...")
-        success, stdout, stderr = ssh.execute_command(f"cd {request.deploy_path} && git pull origin {request.branch}")
-        if not success:
-            raise Exception(f"Git pull failed: {stderr}")
-        self._log(log_file, f"Git pull successful")
-        self._log(log_file, stdout)
-        
-        # Install dependencies
-        self._log(log_file, f"Installing dependencies...")
-        success, stdout, stderr = ssh.execute_command(f"cd {request.deploy_path} && pip install -r requirements.txt")
-        if not success:
-            raise Exception(f"pip install failed: {stderr}")
-        self._log(log_file, f"Dependencies installed successfully")
-        self._log(log_file, stdout)
-        
-        # Restart service
-        self._log(log_file, f"Restarting service: {request.service_name}...")
-        success, stdout, stderr = ssh.execute_command(f"systemctl restart {request.service_name}")
-        if not success:
-            raise Exception(f"Service restart failed: {stderr}")
-        self._log(log_file, f"Service restarted successfully")
-        
-        # Check service status
-        self._log(log_file, f"Checking service status...")
-        success, stdout, stderr = ssh.execute_command(f"systemctl status {request.service_name}")
-        self._log(log_file, f"Service status:")
-        self._log(log_file, stdout)
-        
-        if not success:
-            raise Exception(f"Service is not running properly")
-
     def get_deploy_status(self, deploy_id: int) -> Optional[DeployResponse]:
         """
         Get deploy status by ID.
@@ -812,6 +773,43 @@ class DeployService:
             artifact_path = os.path.join(self.workspace_dir, artifact_path)
             self._log(log_file, f"Converted artifact path to absolute: {artifact_path}")
 
+        # Safety check: if artifact is a directory, search for WAR files
+        if artifact_path and (artifact_type == "directory" or os.path.isdir(artifact_path)):
+            self._log(log_file, f"WARNING: artifact_path is a directory: {artifact_path}")
+            self._log(log_file, f"Searching for WAR files in artifact_path/target/...")
+            target_dir = os.path.join(artifact_path, 'target')
+            if os.path.isdir(target_dir):
+                war_files = []
+                for file in os.listdir(target_dir):
+                    if file.endswith('.war'):
+                        war_path = os.path.join(target_dir, file)
+                        war_files.append(war_path)
+                        self._log(log_file, f"Found WAR file: {war_path}")
+                
+                if war_files:
+                    # Sort by modification time, newest first
+                    war_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                    artifact_path = war_files[0]
+                    artifact_type = "war"
+                    self._log(log_file, f"Using newest WAR file: {artifact_path}")
+                else:
+                    self._log(log_file, f"ERROR: No WAR artifact found in {target_dir}")
+                    raise Exception("No WAR artifact found. Please build the project first.")
+            else:
+                self._log(log_file, f"ERROR: target directory not found: {target_dir}")
+                raise Exception("No WAR artifact found. Please build the project first.")
+
+        # Debug logging before upload
+        self._log(log_file, f"DEBUG: artifact_path = {artifact_path}")
+        self._log(log_file, f"DEBUG: exists = {os.path.exists(artifact_path) if artifact_path else 'N/A'}")
+        self._log(log_file, f"DEBUG: isfile = {os.path.isfile(artifact_path) if artifact_path else 'N/A'}")
+        self._log(log_file, f"DEBUG: isdir = {os.path.isdir(artifact_path) if artifact_path else 'N/A'}")
+        
+        # Final safety check: never upload a directory
+        if artifact_path and os.path.isdir(artifact_path):
+            self._log(log_file, f"ERROR: Cannot upload directory: {artifact_path}")
+            raise Exception(f"Cannot upload directory. Expected a WAR file but got a directory: {artifact_path}")
+
         self._log(log_file, f"=== Uploading Artifact ===")
         self._log(log_file, f"Local artifact: {artifact_path}")
         self._log(log_file, f"Artifact type: {artifact_type}")
@@ -829,7 +827,7 @@ class DeployService:
 
             # Copy directory to deploy path
             self._log(log_file, f"Copying directory to {deploy_path}")
-            copy_cmd = f"sudo cp -r {remote_temp_path}/* {deploy_path}/"
+            copy_cmd = f"sudo -n cp -r {remote_temp_path}/* {deploy_path}/"
             self._log(log_file, f"Executing: {copy_cmd}")
             success, stdout, stderr = ssh.execute_command(copy_cmd)
             if not success:
@@ -849,7 +847,7 @@ class DeployService:
 
             # Copy file to deploy path
             self._log(log_file, f"Copying file to {deploy_path}")
-            copy_cmd = f"sudo cp {remote_temp_path} {deploy_path}/"
+            copy_cmd = f"sudo -n cp {remote_temp_path} {deploy_path}/"
             self._log(log_file, f"Executing: {copy_cmd}")
             success, stdout, stderr = ssh.execute_command(copy_cmd)
             if not success:
@@ -859,7 +857,7 @@ class DeployService:
         # Restart service if specified
         if service_name:
             self._log(log_file, f"Restarting service: {service_name}")
-            restart_cmd = f"sudo systemctl restart {service_name}"
+            restart_cmd = f"sudo -n systemctl restart {service_name}"
             self._log(log_file, f"Executing: {restart_cmd}")
             success, stdout, stderr = ssh.execute_command(restart_cmd)
             if not success:
@@ -867,7 +865,7 @@ class DeployService:
             self._log(log_file, f"Service {service_name} restarted successfully")
 
             # Check service status
-            status_cmd = f"sudo systemctl status {service_name}"
+            status_cmd = f"sudo -n systemctl status {service_name}"
             self._log(log_file, f"Executing: {status_cmd}")
             success, stdout, stderr = ssh.execute_command(status_cmd)
             self._log(log_file, f"Service status:\n{stdout}")

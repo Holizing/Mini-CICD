@@ -91,7 +91,7 @@ class DeploymentStrategy(ABC):
         """
         if context.service_name:
             log_func(f"Validating service {context.service_name}...")
-            success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active {context.service_name}")
+            success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active {context.service_name}")
             if success and "active" in stdout:
                 log_func(f"✓ Service active (running)")
                 return True

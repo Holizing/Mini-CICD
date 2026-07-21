@@ -81,10 +81,10 @@ class ProjectDetector:
                     result.recommended_deploy_path = '/var/lib/tomcat9/webapps'
                     result.recommended_service_name = 'tomcat9'
                     result.recommended_deploy_script = (
-                        'sudo systemctl stop tomcat9\n'
-                        'sudo rm -rf /var/lib/tomcat9/webapps/ROOT\n'
-                        'sudo cp {artifact} /var/lib/tomcat9/webapps/ROOT.war\n'
-                        'sudo systemctl start tomcat9'
+                        'sudo -n systemctl stop tomcat9\n'
+                        'sudo -n rm -rf /var/lib/tomcat9/webapps/ROOT\n'
+                        'sudo -n cp {artifact} /var/lib/tomcat9/webapps/ROOT.war\n'
+                        'sudo -n systemctl start tomcat9'
                     )
                 elif 'spring' in content.lower():
                     result.framework = 'Spring'
@@ -99,10 +99,10 @@ class ProjectDetector:
                     result.recommended_deploy_path = '/var/lib/tomcat9/webapps'
                     result.recommended_service_name = 'tomcat9'
                     result.recommended_deploy_script = (
-                        'sudo systemctl stop tomcat9\n'
-                        'sudo rm -rf /var/lib/tomcat9/webapps/{artifact_name}\n'
-                        'sudo cp {artifact} /var/lib/tomcat9/webapps/\n'
-                        'sudo systemctl start tomcat9'
+                        'sudo -n systemctl stop tomcat9\n'
+                        'sudo -n rm -rf /var/lib/tomcat9/webapps/{artifact_name}\n'
+                        'sudo -n cp {artifact} /var/lib/tomcat9/webapps/\n'
+                        'sudo -n systemctl start tomcat9'
                     )
                 elif 'quarkus' in content.lower():
                     result.framework = 'Quarkus'
@@ -210,7 +210,7 @@ class ProjectDetector:
                 result.recommended_deploy_script = (
                     'cd /var/www/react\n'
                     'npm run build\n'
-                    'sudo cp -r build/* /var/www/html/'
+                    'sudo -n cp -r build/* /var/www/html/'
                 )
             elif 'vue' in dependencies_lower:
                 result.framework = 'Vue'
@@ -222,7 +222,7 @@ class ProjectDetector:
                 result.recommended_deploy_script = (
                     'cd /var/www/vue\n'
                     'npm run build\n'
-                    'sudo cp -r dist/* /var/www/html/'
+                    'sudo -n cp -r dist/* /var/www/html/'
                 )
             elif '@angular/core' in dependencies_lower:
                 result.framework = 'Angular'
@@ -494,7 +494,7 @@ class ProjectDetector:
                     'cd /var/www/laravel\n'
                     'composer install --no-dev\n'
                     'php artisan migrate\n'
-                    'sudo systemctl reload php-fpm'
+                    'sudo -n systemctl reload php-fpm'
                 )
             elif 'symfony' in content.lower():
                 result.framework = 'Symfony'

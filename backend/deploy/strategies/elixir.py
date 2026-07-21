@@ -45,7 +45,7 @@ class PhoenixStrategy(DeploymentStrategy):
             
             # Stop service
             log_func(f"Stopping service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl stop {service_name} || true")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl stop {service_name} || true")
             log_func(f"✓ Success")
             
             # Upload release package
@@ -60,7 +60,8 @@ class PhoenixStrategy(DeploymentStrategy):
             
             # Extract release
             log_func("Extracting release...")
-            artifact_name = artifact_path.split('/')[-1] if artifact_path else "release.tar.gz"
+            import os
+            artifact_name = os.path.basename(artifact_path) if artifact_path else "release.tar.gz"
             success, stdout, stderr = ssh.execute_command(f"cd {deploy_path} && tar -xzf {artifact_name}")
             if not success:
                 log_func(f"✗ Failed to extract release")
@@ -79,7 +80,7 @@ class PhoenixStrategy(DeploymentStrategy):
             
             # Start service
             log_func(f"Starting service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl start {service_name}")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl start {service_name}")
             if not success:
                 log_func(f"✗ Failed to start service")
                 log_func(f"  stderr: {stderr}")
@@ -104,7 +105,7 @@ class PhoenixStrategy(DeploymentStrategy):
         
         if context.service_name:
             log_func(f"Validating service {context.service_name}...")
-            success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active {context.service_name}")
+            success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active {context.service_name}")
             if success and "active" in stdout:
                 log_func(f"✓ Service active (running)")
                 return True

@@ -45,7 +45,7 @@ class RustStrategy(DeploymentStrategy):
             
             # Stop service
             log_func(f"Stopping service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl stop {service_name} || true")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl stop {service_name} || true")
             log_func(f"✓ Success")
             
             # Upload binary
@@ -69,7 +69,7 @@ class RustStrategy(DeploymentStrategy):
             
             # Start service
             log_func(f"Starting service {service_name}...")
-            success, stdout, stderr = ssh.execute_command(f"sudo systemctl start {service_name}")
+            success, stdout, stderr = ssh.execute_command(f"sudo -n systemctl start {service_name}")
             if not success:
                 log_func(f"✗ Failed to start service")
                 log_func(f"  stderr: {stderr}")
@@ -94,7 +94,7 @@ class RustStrategy(DeploymentStrategy):
         
         if context.service_name:
             log_func(f"Validating service {context.service_name}...")
-            success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active {context.service_name}")
+            success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active {context.service_name}")
             if success and "active" in stdout:
                 log_func(f"✓ Service active (running)")
                 return True

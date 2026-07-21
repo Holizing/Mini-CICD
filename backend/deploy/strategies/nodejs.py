@@ -436,7 +436,7 @@ class StaticSiteStrategy(DeploymentStrategy):
             
             # Restart nginx
             log_func("Restarting nginx...")
-            success, stdout, stderr = ssh.execute_command("sudo systemctl restart nginx || sudo systemctl reload nginx")
+            success, stdout, stderr = ssh.execute_command("sudo -n systemctl restart nginx || sudo -n systemctl reload nginx")
             if not success:
                 log_func(f"✗ Failed to restart nginx")
                 log_func(f"  stderr: {stderr}")
@@ -461,7 +461,7 @@ class StaticSiteStrategy(DeploymentStrategy):
         
         # Check nginx service status
         log_func(f"Validating nginx service...")
-        success, stdout, stderr = context.ssh_client.execute_command(f"sudo systemctl is-active nginx")
+        success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active nginx")
         if success and "active" in stdout:
             log_func(f"✓ Nginx service active (running)")
         else:

@@ -18,6 +18,7 @@ const Deploy = () => {
   const [serviceName, setServiceName] = useState('')
   const [deployType, setDeployType] = useState('source')
   const [deployScript, setDeployScript] = useState('')
+  const [deployScriptSuggestion, setDeployScriptSuggestion] = useState('')
   // Docker-specific fields
   const [dockerMode, setDockerMode] = useState('build_from_git')
   const [containerName, setContainerName] = useState('')
@@ -53,6 +54,9 @@ const Deploy = () => {
         try {
           const status = await deployService.getDeployStatus(currentDeploy.id)
           setCurrentDeploy(status)
+
+          // Also fetch stages
+          await fetchStages(currentDeploy.id)
 
           if (status.status !== 'running') {
             clearInterval(statusIntervalId)
@@ -103,6 +107,24 @@ const Deploy = () => {
     }
   }
 
+  const fetchStages = async (deployId) => {
+    try {
+      const stagesData = await deployService.getDeployStages(deployId)
+      setStages(stagesData || [])
+    } catch (err) {
+      console.error('Failed to fetch stages:', err)
+    }
+  }
+
+  const fetchStageLog = async (deployId, stageName) => {
+    try {
+      const response = await deployService.getStageLog(deployId, stageName)
+      setStageLog(response.log || '')
+    } catch (err) {
+      console.error('Failed to fetch stage log:', err)
+    }
+  }
+
   const handleStartDeploy = async (e) => {
     e.preventDefault()
 
@@ -131,6 +153,10 @@ const Deploy = () => {
       setError(null)
       setCurrentDeploy(null)
       setLog('')
+      setStages([])
+      setSelectedStage(null)
+      setStageLog('')
+      setViewMode('timeline')
 
       const response = await deployService.startDeploy({
         build_id: parseInt(buildId),
@@ -206,9 +232,15 @@ const Deploy = () => {
         if (selectedBuild.recommended_service_name) {
           setServiceName(selectedBuild.recommended_service_name)
         }
+        // Set suggestion instead of value - user can accept with Tab
         if (selectedBuild.recommended_deploy_script) {
-          setDeployScript(selectedBuild.recommended_deploy_script)
+          setDeployScriptSuggestion(selectedBuild.recommended_deploy_script)
+        } else {
+          setDeployScriptSuggestion('')
         }
+      } else {
+        // Clear suggestion for non-source builds or failed builds
+        setDeployScriptSuggestion('')
       }
     }
   }
@@ -216,7 +248,31 @@ const Deploy = () => {
   const handleDeployTypeChange = (e) => {
     const newType = e.target.value
     setDeployType(newType)
-    // Removed auto-fill - user configures their own script
+    // Clear suggestion when deploy type changes
+    setDeployScriptSuggestion('')
+  }
+
+  const handleDeployScriptKeyDown = (e) => {
+    // Tab to accept suggestion
+    if (e.key === 'Tab' && deployScriptSuggestion && !deployScript) {
+      e.preventDefault()
+      setDeployScript(deployScriptSuggestion)
+      setDeployScriptSuggestion('')
+    }
+    // Esc to dismiss suggestion
+    if (e.key === 'Escape' && deployScriptSuggestion) {
+      e.preventDefault()
+      setDeployScriptSuggestion('')
+    }
+  }
+
+  const handleDeployScriptChange = (e) => {
+    const newValue = e.target.value
+    setDeployScript(newValue)
+    // Clear suggestion when user starts typing
+    if (newValue && deployScriptSuggestion) {
+      setDeployScriptSuggestion('')
+    }
   }
 
   return (
@@ -932,38 +988,70 @@ const Deploy = () => {
                   Leave empty to use framework's default deployment strategy
                 </span>
               </label>
-              <textarea
-                value={deployScript}
-                onChange={(e) => setDeployScript(e.target.value)}
-                placeholder={deployType === 'docker' ? 'docker compose -f /opt/app/docker-compose.yml up -d' : 'Leave empty to use automatic framework-based deployment'}
-                rows={6}
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: '1px solid #d1d5db',
-                  borderRadius: '6px',
-                  fontSize: '13px',
-                  fontFamily: 'monospace',
-                  outline: 'none',
-                  transition: 'border-color 0.2s',
-                  resize: 'vertical',
-                  backgroundColor: '#fafafa'
-                }}
-                onFocus={(e) => {
-                  e.target.style.borderColor = '#3b82f6'
-                  e.target.style.backgroundColor = 'white'
-                }}
-                onBlur={(e) => {
-                  e.target.style.borderColor = '#d1d5db'
-                  e.target.style.backgroundColor = '#fafafa'
-                }}
-              />
+              <div style={{ position: 'relative' }}>
+                <textarea
+                  value={deployScript}
+                  onChange={handleDeployScriptChange}
+                  onKeyDown={handleDeployScriptKeyDown}
+                  rows={6}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    fontFamily: 'monospace',
+                    outline: 'none',
+                    transition: 'border-color 0.2s',
+                    resize: 'vertical',
+                    backgroundColor: '#fafafa',
+                    color: deployScript ? '#111827' : 'transparent'
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.borderColor = '#3b82f6'
+                    e.target.style.backgroundColor = 'white'
+                  }}
+                  onBlur={(e) => {
+                    e.target.style.borderColor = '#d1d5db'
+                    e.target.style.backgroundColor = '#fafafa'
+                  }}
+                />
+                {deployScriptSuggestion && !deployScript && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '10px',
+                    left: '12px',
+                    right: '12px',
+                    bottom: '10px',
+                    pointerEvents: 'none',
+                    fontSize: '13px',
+                    fontFamily: 'monospace',
+                    color: '#9ca3af',
+                    whiteSpace: 'pre-wrap',
+                    wordWrap: 'break-word',
+                    overflow: 'hidden',
+                    lineHeight: '1.5'
+                  }}>
+                    {deployScriptSuggestion}
+                  </div>
+                )}
+              </div>
               <div style={{
                 fontSize: '12px',
                 color: '#6b7280',
-                marginTop: '4px'
+                marginTop: '4px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
               }}>
-                {deployType === 'docker' ? 'Optional: override default deploy. Image transfer (save/load) is automatic.' : 'Custom deployment commands. Artifact upload and service restart are automatic.'}
+                <span>
+                  {deployType === 'docker' ? 'Optional: override default deploy. Image transfer (save/load) is automatic.' : 'Custom deployment commands. Artifact upload and service restart are automatic.'}
+                </span>
+                {deployScriptSuggestion && !deployScript && (
+                  <span style={{ color: '#6b7280', fontStyle: 'italic' }}>
+                    Press Tab to accept suggestion, Esc to dismiss
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1160,6 +1248,175 @@ const Deploy = () => {
                   <StatusBadge status={currentDeploy.status} />
                 </div>
               </div>
+
+              {/* Deploy Timeline */}
+              {currentDeploy && stages.length > 0 && (
+                <div style={{
+                  marginTop: '20px',
+                  padding: '16px',
+                  backgroundColor: '#f9fafb',
+                  borderRadius: '6px',
+                  border: '1px solid #e5e7eb'
+                }}>
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '12px'
+                  }}>
+                    <h3 style={{
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      color: '#374151',
+                      margin: 0
+                    }}>
+                      Deploy Timeline
+                    </h3>
+                    <div style={{
+                      display: 'flex',
+                      gap: '8px'
+                    }}>
+                      <button
+                        onClick={() => setViewMode('timeline')}
+                        style={{
+                          padding: '6px 12px',
+                          backgroundColor: viewMode === 'timeline' ? '#3b82f6' : '#e5e7eb',
+                          color: viewMode === 'timeline' ? 'white' : '#374151',
+                          border: 'none',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Timeline
+                      </button>
+                      <button
+                        onClick={() => setViewMode('raw')}
+                        style={{
+                          padding: '6px 12px',
+                          backgroundColor: viewMode === 'raw' ? '#3b82f6' : '#e5e7eb',
+                          color: viewMode === 'raw' ? 'white' : '#374151',
+                          border: 'none',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Raw Log
+                      </button>
+                    </div>
+                  </div>
+
+                  {viewMode === 'timeline' ? (
+                    <div>
+                      {stages.map((stage, index) => (
+                        <div
+                          key={stage.id}
+                          onClick={() => {
+                            setSelectedStage(stage)
+                            fetchStageLog(currentDeploy.id, stage.stage_name)
+                          }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            padding: '10px',
+                            marginBottom: '8px',
+                            backgroundColor: selectedStage?.id === stage.id ? '#dbeafe' : 'white',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            border: '1px solid #e5e7eb',
+                            transition: 'background-color 0.2s'
+                          }}
+                          onMouseEnter={(e) => {
+                            if (selectedStage?.id !== stage.id) {
+                              e.target.style.backgroundColor = '#f3f4f6'
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (selectedStage?.id !== stage.id) {
+                              e.target.style.backgroundColor = 'white'
+                            }
+                          }}
+                        >
+                          <div style={{
+                            marginRight: '12px',
+                            fontSize: '16px',
+                            color: stage.status === 'success' ? '#10b981' :
+                                   stage.status === 'failed' ? '#ef4444' :
+                                   stage.status === 'running' ? '#3b82f6' : '#9ca3af'
+                          }}>
+                            {stage.status === 'success' ? '✔' :
+                             stage.status === 'failed' ? '✗' :
+                             stage.status === 'running' ? '⏳' : '□'}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{
+                              fontSize: '14px',
+                              fontWeight: '500',
+                              color: '#111827'
+                            }}>
+                              {stage.stage_name}
+                            </div>
+                            {stage.duration && (
+                              <div style={{
+                                fontSize: '12px',
+                                color: '#6b7280',
+                                marginTop: '2px'
+                              }}>
+                                {stage.duration}s
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <DeployLog log={log} loading={logLoading} />
+                  )}
+                </div>
+              )}
+
+              {/* Stage Log Viewer */}
+              {selectedStage && viewMode === 'timeline' && (
+                <div style={{
+                  marginTop: '20px',
+                  padding: '16px',
+                  backgroundColor: '#f9fafb',
+                  borderRadius: '6px',
+                  border: '1px solid #e5e7eb'
+                }}>
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '12px'
+                  }}>
+                    <h3 style={{
+                      fontSize: '16px',
+                      fontWeight: '600',
+                      color: '#374151',
+                      margin: 0
+                    }}>
+                      {selectedStage.stage_name} Log
+                    </h3>
+                    <button
+                      onClick={() => setSelectedStage(null)}
+                      style={{
+                        padding: '4px 8px',
+                        backgroundColor: '#e5e7eb',
+                        color: '#374151',
+                        border: 'none',
+                        borderRadius: '4px',
+                        fontSize: '12px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Close
+                    </button>
+                  </div>
+                  <DeployLog log={stageLog} loading={false} />
+                </div>
+              )}
 
               <button
                 onClick={() => fetchLog(currentDeploy.id)}

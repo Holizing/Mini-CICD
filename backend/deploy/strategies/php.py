@@ -121,7 +121,7 @@ class LaravelStrategy(DeploymentStrategy):
             
             # Restart PHP-FPM
             log_func("Restarting PHP-FPM...")
-            success, stdout, stderr = ssh.execute_command("sudo systemctl restart php-fpm || sudo systemctl restart php8.1-fpm || sudo systemctl restart php8.2-fpm")
+            success, stdout, stderr = ssh.execute_command("sudo -n systemctl restart php-fpm || sudo -n systemctl restart php8.1-fpm || sudo -n systemctl restart php8.2-fpm")
             if not success:
                 log_func(f"✗ Failed to restart PHP-FPM")
                 log_func(f"  stderr: {stderr}")
@@ -146,7 +146,7 @@ class LaravelStrategy(DeploymentStrategy):
         
         # Check PHP-FPM service status
         log_func(f"Validating PHP-FPM service...")
-        success, stdout, stderr = context.ssh_client.execute_command("sudo systemctl is-active php-fpm || sudo systemctl is-active php8.1-fpm || sudo systemctl is-active php8.2-fpm")
+        success, stdout, stderr = context.ssh_client.execute_command("sudo -n systemctl is-active php-fpm || sudo -n systemctl is-active php8.1-fpm || sudo -n systemctl is-active php8.2-fpm")
         if success and "active" in stdout:
             log_func(f"✓ PHP-FPM service active (running)")
         else:
@@ -255,7 +255,7 @@ class SymfonyStrategy(DeploymentStrategy):
             
             # Restart PHP-FPM
             log_func("Restarting PHP-FPM...")
-            success, stdout, stderr = ssh.execute_command("sudo systemctl restart php-fpm || sudo systemctl restart php8.1-fpm || sudo systemctl restart php8.2-fpm")
+            success, stdout, stderr = ssh.execute_command("sudo -n systemctl restart php-fpm || sudo -n systemctl restart php8.1-fpm || sudo -n systemctl restart php8.2-fpm")
             if not success:
                 log_func(f"✗ Failed to restart PHP-FPM")
                 log_func(f"  stderr: {stderr}")
@@ -280,7 +280,7 @@ class SymfonyStrategy(DeploymentStrategy):
         
         # Check PHP-FPM service status
         log_func(f"Validating PHP-FPM service...")
-        success, stdout, stderr = context.ssh_client.execute_command("sudo systemctl is-active php-fpm || sudo systemctl is-active php8.1-fpm || sudo systemctl is-active php8.2-fpm")
+        success, stdout, stderr = context.ssh_client.execute_command("sudo -n systemctl is-active php-fpm || sudo -n systemctl is-active php8.1-fpm || sudo -n systemctl is-active php8.2-fpm")
         if success and "active" in stdout:
             log_func(f"✓ PHP-FPM service active (running)")
         else:
@@ -366,7 +366,7 @@ class CodeIgniterStrategy(DeploymentStrategy):
             
             # Restart PHP-FPM
             log_func("Restarting PHP-FPM...")
-            success, stdout, stderr = ssh.execute_command("sudo systemctl restart php-fpm || sudo systemctl restart php8.1-fpm || sudo systemctl restart php8.2-fpm")
+            success, stdout, stderr = ssh.execute_command("sudo -n systemctl restart php-fpm || sudo -n systemctl restart php8.1-fpm || sudo -n systemctl restart php8.2-fpm")
             if not success:
                 log_func(f"✗ Failed to restart PHP-FPM")
                 log_func(f"  stderr: {stderr}")
@@ -391,7 +391,7 @@ class CodeIgniterStrategy(DeploymentStrategy):
         
         # Check PHP-FPM service status
         log_func(f"Validating PHP-FPM service...")
-        success, stdout, stderr = context.ssh_client.execute_command("sudo systemctl is-active php-fpm || sudo systemctl is-active php8.1-fpm || sudo systemctl is-active php8.2-fpm")
+        success, stdout, stderr = context.ssh_client.execute_command("sudo -n systemctl is-active php-fpm || sudo -n systemctl is-active php8.1-fpm || sudo -n systemctl is-active php8.2-fpm")
         if success and "active" in stdout:
             log_func(f"✓ PHP-FPM service active (running)")
         else:

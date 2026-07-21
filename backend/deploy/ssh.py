@@ -67,47 +67,47 @@ class SSHClient:
         Returns:
             Tuple of (success: bool, stdout: str, stderr: str)
         """
-        print(f"[DEBUG] ENTER execute_command: {command}")
-        print(f"[DEBUG] use_pty: {use_pty}")
+        print(f"[SSH] Executing command: {command}")
+        print(f"[SSH] use_pty: {use_pty}")
         
         if not self.client:
-            print(f"[DEBUG] SSH client not connected")
+            print(f"[SSH] ERROR: SSH client not connected")
             return False, "", "SSH client not connected"
 
         try:
             # Automatically add -n flag to sudo commands for passwordless sudo
             # This prevents sudo from prompting for password even if NOPASSWD is configured
+            original_command = command
             if 'sudo' in command and '-n' not in command.split():
                 # Insert -n after sudo (e.g., "sudo systemctl" -> "sudo -n systemctl")
                 command = command.replace('sudo', 'sudo -n', 1)
-                print(f"[DEBUG] Modified command with -n flag: {command}")
+                print(f"[SSH] Modified command with -n flag: {command}")
+            else:
+                print(f"[SSH] Command unchanged (no sudo or already has -n): {command}")
 
             # Only use PTY if explicitly requested (for interactive commands)
             # For simple commands, PTY is not needed and can cause hanging
-            print(f"[DEBUG] Before exec_command")
             stdin, stdout, stderr = self.client.exec_command(command, timeout=300, get_pty=use_pty)
-            print(f"[DEBUG] After exec_command")
 
             # Read output
-            print(f"[DEBUG] Before stdout.read()")
             stdout_str = stdout.read().decode('utf-8')
-            print(f"[DEBUG] After stdout.read()")
-            print(f"[DEBUG] Before stderr.read()")
             stderr_str = stderr.read().decode('utf-8')
-            print(f"[DEBUG] After stderr.read()")
 
             # Get exit status
-            print(f"[DEBUG] Before recv_exit_status")
             exit_status = stdout.channel.recv_exit_status()
-            print(f"[DEBUG] After recv_exit_status: {exit_status}")
             success = exit_status == 0
 
-            print(f"[DEBUG] EXIT execute_command: success={success}")
+            print(f"[SSH] Command completed: exit_status={exit_status}, success={success}")
+            if stdout_str:
+                print(f"[SSH] stdout: {stdout_str[:200]}")  # Log first 200 chars
+            if stderr_str:
+                print(f"[SSH] stderr: {stderr_str[:200]}")  # Log first 200 chars
+            
             return success, stdout_str, stderr_str
         except Exception as e:
-            print(f"[DEBUG] Exception in execute_command: {str(e)}")
+            print(f"[SSH] Exception in execute_command: {str(e)}")
             import traceback
-            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            print(f"[SSH] Traceback: {traceback.format_exc()}")
             return False, "", f"Command execution failed: {str(e)}"
 
     def upload_file(self, local_path: str, remote_path: str) -> Tuple[bool, str]:
