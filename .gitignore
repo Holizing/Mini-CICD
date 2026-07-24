@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local data
+*.db
+*.sqlite
+*.sqlite3
+logs/
+*.log
+workspace/
+.mini-cicd-jwt-secret
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Node / Frontend
+node_modules/
+dist/
+.npm/
+.cache/
+.next/
+out/
+.vite/
+
+# Test and tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.ipynb_checkpoints
+.fastapi-data/
