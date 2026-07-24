@@ -42,6 +42,7 @@ desktop.ini
 logs/
 *.log
 workspace/
+runtime/
 .mini-cicd-jwt-secret
 
 # Environment variables

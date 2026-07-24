@@ -6,7 +6,13 @@ from sqlalchemy.orm import sessionmaker
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DB_PATH = os.path.join(BASE_DIR, "backend", "cicd.db")
+DB_PATH = os.path.abspath(
+    os.environ.get(
+        "MINI_CICD_DATABASE_PATH",
+        os.path.join(BASE_DIR, "backend", "cicd.db"),
+    )
+)
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(

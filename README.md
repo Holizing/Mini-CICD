@@ -1,43 +1,47 @@
 # Mini-CICD
 
-A lightweight CI/CD system for automated build and deployment of web applications across multiple frameworks.
+Mini-CICD is a small Linux-focused platform for managing repositories and
+running Build -> Deploy workflows from a web interface.
 
-## Features
+## Verified deployment profiles
 
-- **Multi-Framework**: Supports Java, Node.js, Python, PHP, .NET, Go, Rust, Ruby, Elixir, and Static Sites.
-- **Auto-Detection**: Automatically identifies frameworks, runtimes, and build tools.
-- **Deploy Options**: Deploy from source code or via Docker containers.
-- **Security**: Secure SSH deployment via password or SSH key.
-- **Real-Time Logs**: Live monitoring for build and deployment stages.
+- Docker image build/deploy.
+- React/Vite prebuilt static artifact.
+- FastAPI source artifact with pinned Python dependencies.
+- Express source artifact with `package-lock.json`.
+- Spring Boot executable JAR.
 
-## Architecture
+Other strategy recipes remain available as **experimental** code. They are
+disabled by default and must not be presented as verified support.
 
-- **Frontend**: React + Vite
-- **Backend**: FastAPI
-- **Database**: SQLite
+## Stack
 
-## Quick Start
+- Backend: Python, FastAPI, Uvicorn, SQLAlchemy, SQLite, Paramiko.
+- Frontend: React, Vite, React Router DOM, Axios.
+- Linux runtime: systemd, Nginx, OpenSSH, Docker Engine.
 
-**Prerequisites:** Python 3.8+, Node.js 16+, Git.
+## Local development
 
-**Backend (Port 8000):**
-
-```bash
-cd backend
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-python app.py
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r backend\requirements.txt
+python -m uvicorn backend.app:app --reload
 ```
 
-**Frontend (Port 3000):**
-
-```bash
+```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-## License
+Open the API documentation at `http://127.0.0.1:8000/docs`. The Ubuntu staging
+runbook is in `ops/linux/README.md`.
 
-MIT License. Pull Requests are welcome.
+## Security defaults
+
+- Experimental strategies are off unless
+  `MINI_CICD_ENABLE_EXPERIMENTAL_STRATEGIES=true`.
+- SSH requires a trusted `known_hosts` file; unknown host keys are rejected.
+- Database files, runtime data, JWT secrets, SSH keys, logs and environment
+  files must not be committed.
