@@ -209,9 +209,16 @@ and deployment evidence remain under `/home/cino/Mini-CICD` after the restart.
 
 ## 10. GitHub webhook automation
 
-Set a new Webhook secret in Settings, then configure Automation on the target
-Project. The Project repository must use `github.com`, and its branch must
-match the GitHub push branch exactly.
+Generate a secret of at least 32 characters without printing or committing it:
+
+```bash
+umask 077
+openssl rand -hex 32 > runtime/secrets/github-webhook-secret
+```
+
+Enter that value in Settings, then configure Automation on the target Project.
+The Project repository must use `github.com`, and its branch must match the
+GitHub push branch exactly. The Settings API never returns the stored secret.
 
 Install and authenticate Tailscale on Ubuntu. Publish only the loopback webhook
 listener:
@@ -239,3 +246,8 @@ For a source Project, configure the build script and health endpoint. For a
 Docker Project, also configure image name/tag, Dockerfile, context, container
 name and port mapping. Webhook automation never executes a custom deploy
 script.
+
+Run the five profiles sequentially. Wait for each delivery to reach a terminal
+state before pushing the next demo branch, because this mini-project uses
+FastAPI BackgroundTasks and one shared workspace rather than a persistent task
+queue.

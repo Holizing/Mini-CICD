@@ -42,6 +42,25 @@ npm run dev
 Open the API documentation at `http://127.0.0.1:8000/docs`. The Ubuntu staging
 runbook is in `ops/linux/README.md`.
 
+## Manual test gate
+
+Tests run locally and do not use GitHub Actions. They always create a temporary
+SQLite database, so `backend/cicd.db` and the Ubuntu runtime database are never
+modified.
+
+```powershell
+python -m pip install -r backend\requirements-dev.txt
+python -m pytest backend\tests
+python -m compileall backend
+python -m pip check
+cd frontend
+npm ci
+npm run build
+```
+
+The complete release and Ubuntu E2E checklist is in
+`docs/RELEASE_CHECKLIST.md`.
+
 ## Security defaults
 
 - Experimental strategies are off unless
@@ -49,6 +68,8 @@ runbook is in `ops/linux/README.md`.
 - SSH requires a trusted `known_hosts` file; unknown host keys are rejected.
 - GitHub webhooks require `X-Hub-Signature-256` HMAC verification and use
   `X-GitHub-Delivery` as an idempotency key.
+- New webhook secrets must contain 32 to 255 characters. Leaving the Settings
+  input blank preserves the existing secret.
 - Deployment target settings store only SSH key and `known_hosts` paths, never
   passwords or private key contents.
 - Database files, runtime data, JWT secrets, SSH keys, logs and environment

@@ -94,6 +94,11 @@ function validateForm(formData) {
     }
   }
 
+  const webhookSecret = formData.webhook_secret.trim()
+  if (webhookSecret && webhookSecret.length < 32) {
+    return 'GitHub webhook secret must contain at least 32 characters'
+  }
+
   return ''
 }
 
@@ -436,6 +441,7 @@ function Settings() {
             <input
               name="webhook_secret"
               value={formData.webhook_secret}
+              maxLength={255}
               onChange={handleChange}
               type="password"
               autoComplete="new-password"
