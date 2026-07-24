@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from backend.common.database import get_db
+from backend.common.runtime import get_execution_settings
 from backend.build.schemas import BuildStartRequest, BuildResponse, BuildHistoryResponse, BuildStageResponse
 from backend.build.service import BuildService
 
@@ -20,10 +21,14 @@ def get_build_service(
     Returns:
         BuildService instance
     """
-    # Configure these paths based on your project structure
-    workspace_dir = "workspace"
-    logs_dir = "logs"
-    return BuildService(db, workspace_dir, logs_dir)
+    settings = get_execution_settings(db)
+    return BuildService(
+        db=db,
+        workspace_dir=settings.workspace_dir,
+        logs_dir=settings.logs_dir,
+        timeout_seconds=settings.build_timeout_seconds,
+        docker_enabled=settings.docker_enabled,
+    )
 
 
 @router.post("/start", response_model=BuildResponse)
@@ -45,6 +50,10 @@ async def start_build(
     try:
         build = build_service.start_build(request, background_tasks)
         return build
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start build: {str(e)}")
 

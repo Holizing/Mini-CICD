@@ -6,6 +6,7 @@ from backend.project.schemas import (
     ProjectCreate,
     ProjectListResponse,
     ProjectResponse,
+    ProjectStatus,
     ProjectUpdate,
 )
 from backend.project.service import ProjectService
@@ -22,9 +23,14 @@ def get_project_service(db: Session = Depends(get_db)) -> ProjectService:
 async def get_projects(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    project_status: ProjectStatus | None = Query(default=None, alias="status"),
     project_service: ProjectService = Depends(get_project_service),
 ):
-    projects, total = project_service.get_projects(limit=limit, offset=offset)
+    projects, total = project_service.get_projects(
+        limit=limit,
+        offset=offset,
+        project_status=project_status,
+    )
     return ProjectListResponse(projects=projects, total=total)
 
 

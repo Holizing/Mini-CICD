@@ -1,5 +1,6 @@
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -8,10 +9,19 @@ from backend.build.detector import ProjectDetector
 
 
 class BuildRunner:
-    def __init__(self, workspace_dir: str, logs_dir: str, db_session=None):
+    def __init__(
+        self,
+        workspace_dir: str,
+        logs_dir: str,
+        db_session=None,
+        timeout_seconds: int = 600,
+        deadline: Optional[float] = None,
+    ):
         self.workspace_dir = workspace_dir
         self.logs_dir = logs_dir
         self.db_session = db_session
+        self.timeout_seconds = timeout_seconds
+        self.deadline = deadline or (time.monotonic() + timeout_seconds)
         ensure_directory_exists(workspace_dir)
         ensure_directory_exists(logs_dir)
 
@@ -30,6 +40,14 @@ class BuildRunner:
         self.current_build_id = None
         self.stages = {}  # stage_name -> stage_id
         self.stage_logs = {}  # stage_name -> log_file_path
+
+    def _remaining_timeout(self) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Build timed out after {self.timeout_seconds} seconds"
+            )
+        return max(0.1, remaining)
 
     def _log(self, log_file, message: str) -> None:
         """Write message to log file."""
@@ -105,8 +123,35 @@ class BuildRunner:
                 stage.error_message = error_message
             self.db_session.commit()
 
+    def _load_stages(self, build_id: int) -> bool:
+        if not self.db_session:
+            return False
+
+        from backend.build.models import BuildStage
+
+        stages = (
+            self.db_session.query(BuildStage)
+            .filter(BuildStage.build_id == build_id)
+            .order_by(BuildStage.id)
+            .all()
+        )
+        if not stages:
+            return False
+
+        self.current_build_id = build_id
+        self.stages = {stage.stage_name: stage.id for stage in stages}
+        self.stage_logs = {
+            stage.stage_name: stage.log_file
+            for stage in stages
+            if stage.log_file
+        }
+        return True
+
     def _initialize_stages(self, build_id: int, build_type: str, docker_mode: str = None) -> None:
         """Initialize all stages for a build."""
+        if self._load_stages(build_id):
+            return
+
         self.current_build_id = build_id
         self.stages = {}
         self.stage_logs = {}
@@ -346,7 +391,7 @@ class BuildRunner:
                 cwd=abs_build_context,
                 capture_output=True,
                 text=True,
-                timeout=1800  # 30 minutes timeout
+                timeout=self._remaining_timeout(),
             )
 
             # Log output
@@ -367,7 +412,9 @@ class BuildRunner:
             return True, ""
 
         except subprocess.TimeoutExpired:
-            error_msg = f"Docker build timed out after 30 minutes"
+            error_msg = (
+                f"Docker build timed out after {self.timeout_seconds} seconds"
+            )
             self._log(log_file, error_msg)
             return False, error_msg
         except Exception as e:
@@ -389,7 +436,8 @@ class BuildRunner:
             self._log(log_file, f"Cloning repository from {git_url}...")
             success, stdout, stderr = run_command(
                 ["git", "clone", git_url, project_name],
-                self.workspace_dir
+                self.workspace_dir,
+                self._remaining_timeout(),
             )
 
             if not success:
@@ -400,7 +448,11 @@ class BuildRunner:
             self._log(log_file, f"Repository cloned successfully")
 
             # Checkout branch
-            success, stdout, stderr = run_command(["git", "checkout", branch], project_path)
+            success, stdout, stderr = run_command(
+                ["git", "checkout", branch],
+                project_path,
+                self._remaining_timeout(),
+            )
             if not success:
                 error_msg = f"Git checkout branch {branch} failed: {stderr}"
                 self._log(log_file, error_msg)
@@ -410,18 +462,30 @@ class BuildRunner:
             self._log(log_file, f"Repository exists, pulling latest changes...")
 
             # Fetch
-            success, stdout, stderr = run_command(["git", "fetch"], project_path)
+            success, stdout, stderr = run_command(
+                ["git", "fetch"],
+                project_path,
+                self._remaining_timeout(),
+            )
             if not success:
                 error_msg = f"Git fetch failed: {stderr}"
                 self._log(log_file, error_msg)
                 return False, error_msg
 
             # Checkout branch - try direct checkout first, then create from remote if needed
-            success, stdout, stderr = run_command(["git", "checkout", branch], project_path)
+            success, stdout, stderr = run_command(
+                ["git", "checkout", branch],
+                project_path,
+                self._remaining_timeout(),
+            )
             if not success:
                 # Branch might not exist locally, try to create from remote
                 self._log(log_file, f"Local branch {branch} not found, creating from remote...")
-                success, stdout, stderr = run_command(["git", "checkout", "-b", branch, f"origin/{branch}"], project_path)
+                success, stdout, stderr = run_command(
+                    ["git", "checkout", "-b", branch, f"origin/{branch}"],
+                    project_path,
+                    self._remaining_timeout(),
+                )
                 if not success:
                     error_msg = f"Git checkout failed: {stderr}"
                     self._log(log_file, error_msg)
@@ -430,7 +494,8 @@ class BuildRunner:
             # Pull
             success, stdout, stderr = run_command(
                 ["git", "pull", "origin", branch],
-                project_path
+                project_path,
+                self._remaining_timeout(),
             )
             if not success:
                 error_msg = f"Git pull failed: {stderr}"
@@ -476,7 +541,7 @@ class BuildRunner:
                     cwd=project_path,
                     capture_output=True,
                     text=True,
-                    timeout=1800  # 30 minutes timeout per command
+                    timeout=self._remaining_timeout(),
                 )
 
                 # Log output
@@ -496,7 +561,10 @@ class BuildRunner:
                 self._log(log_file, f"Command {i} completed successfully")
 
             except subprocess.TimeoutExpired:
-                error_msg = f"Command {i} timed out after 30 minutes: {cmd}"
+                error_msg = (
+                    f"Command {i} timed out after "
+                    f"{self.timeout_seconds} seconds: {cmd}"
+                )
                 self._log(log_file, error_msg)
                 return False, error_msg
             except Exception as e:
@@ -623,7 +691,10 @@ class BuildRunner:
         self._complete_stage("Detect Project Type", "success")
 
         # Step 3: Get commit hash
-        commit_hash = get_commit_hash(project_path)
+        commit_hash = get_commit_hash(
+            project_path,
+            self._remaining_timeout(),
+        )
         if commit_hash:
             self._log(log_file, f"Current commit: {commit_hash}")
         else:

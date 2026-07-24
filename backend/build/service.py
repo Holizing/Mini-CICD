@@ -1,168 +1,205 @@
 import os
 import time
+import traceback
 from datetime import datetime
 from typing import Optional
-from fastapi import BackgroundTasks
+
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
-from backend.build.models import Build
-from backend.common.database import SessionLocal
-from backend.build.schemas import BuildStartRequest, BuildResponse
+
+from backend.build.models import Build, BuildStage
 from backend.build.runner import BuildRunner
+from backend.build.schemas import (
+    BuildExecutionInput,
+    BuildResponse,
+    BuildStartRequest,
+)
 from backend.build.utils import get_log_path
+from backend.common.database import SessionLocal
+from backend.project.models import Project
+
+
+def run_build_worker(build_id: int, execution_data: dict) -> None:
+    """Run a build with a database session owned by the background worker."""
+    worker_started_at = time.time()
+
+    try:
+        execution = BuildExecutionInput.model_validate(execution_data)
+        with SessionLocal() as db:
+            service = BuildService(
+                db=db,
+                workspace_dir=execution.workspace_dir,
+                logs_dir=execution.logs_dir,
+                timeout_seconds=execution.timeout_seconds,
+            )
+            service._execute_build_task(build_id, execution.repo_url)
+    except Exception as error:
+        worker_traceback = traceback.format_exc()
+        with SessionLocal() as db:
+            service = BuildService(
+                db=db,
+                workspace_dir=execution_data["workspace_dir"],
+                logs_dir=execution_data["logs_dir"],
+                timeout_seconds=execution_data["timeout_seconds"],
+            )
+            service._mark_build_failed(
+                build_id=build_id,
+                error=error,
+                worker_started_at=worker_started_at,
+                worker_traceback=worker_traceback,
+            )
 
 
 class BuildService:
-    def __init__(self, db: Session, workspace_dir: str, logs_dir: str):
+    def __init__(
+        self,
+        db: Session,
+        workspace_dir: str,
+        logs_dir: str,
+        timeout_seconds: int = 600,
+        docker_enabled: bool = True,
+    ):
         self.db = db
-        # Convert workspace_dir to absolute path
         self.workspace_dir = os.path.abspath(workspace_dir)
-        self.logs_dir = logs_dir
-        self.runner = BuildRunner(self.workspace_dir, logs_dir, db_session=db)
+        self.logs_dir = os.path.abspath(logs_dir)
+        self.timeout_seconds = timeout_seconds
+        self.docker_enabled = docker_enabled
 
     def start_build(self, request: BuildStartRequest, background_tasks: BackgroundTasks) -> BuildResponse:
-        """
-        Start a new build process.
-        
-        Args:
-            request: Build start request with project details
-            background_tasks: FastAPI background tasks
-            
-        Returns:
-            Build response with build details
-        """
-        # Validation based on docker_mode
-        if request.build_type == "docker" and request.docker_mode == "existing_image":
-            if not request.docker_image:
-                raise ValueError("docker_image is required for existing_image mode")
-        elif request.build_type == "docker" and request.docker_mode == "build_from_git":
-            if not request.git_url or not request.branch:
-                raise ValueError("git_url and branch are required for build_from_git mode")
-            if not request.image_name:
-                raise ValueError("image_name is required for build_from_git mode")
-        elif request.build_type == "source":
-            if not request.git_url or not request.branch:
-                raise ValueError("git_url and branch are required for source build")
-        
+        """Create a build from canonical Project data and schedule its worker."""
+        project = self.db.get(Project, request.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if project.status != "active":
+            raise HTTPException(
+                status_code=409,
+                detail="Inactive projects cannot start new builds",
+            )
+        if request.build_type == "docker" and not self.docker_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="Docker execution is disabled in Settings",
+            )
+
         request_start_time = time.time()
-        # Create build record
         build = Build(
-            project_id=request.project_id,
-            project_name=request.project_name,
-            branch=request.branch,
+            project_id=project.id,
+            project_name=project.name,
+            branch=project.branch,
             build_type=request.build_type,
             build_script=request.build_script,
-            docker_mode=request.docker_mode,
-            image_name=request.image_name,
-            image_tag=request.image_tag,
-            dockerfile_path=request.dockerfile_path,
-            build_context=request.build_context,
-            docker_image=request.docker_image,
-            docker_compose_file=request.docker_compose_file,
+            docker_mode=request.docker_mode if request.build_type == "docker" else None,
+            image_name=request.image_name if request.build_type == "docker" else None,
+            image_tag=request.image_tag if request.build_type == "docker" else None,
+            dockerfile_path=request.dockerfile_path if request.build_type == "docker" else None,
+            build_context=request.build_context if request.build_type == "docker" else None,
+            docker_image=request.docker_image if request.build_type == "docker" else None,
+            docker_compose_file=(
+                request.docker_compose_file
+                if request.build_type == "docker"
+                else None
+            ),
             status="running",
-            log_path=get_log_path(self.logs_dir, 0)  # Temporary, will update after getting ID
+            log_path=get_log_path(self.logs_dir, 0),
         )
-        
+
         self.db.add(build)
         self.db.commit()
         self.db.refresh(build)
-        
-        # Update log path with actual build ID
+
         build.log_path = get_log_path(self.logs_dir, build.id)
         self.db.commit()
-        
-        request_duration = time.time() - request_start_time
-        
-        # Log request timings
-        self.runner._log(build.log_path, f"HTTP request start: {datetime.utcfromtimestamp(request_start_time).isoformat()}Z")
-        self.runner._log(build.log_path, f"HTTP response sent (Request duration: {request_duration:.4f}s)")
-        
-        # Execute build asynchronously in background
-        def run_build_with_error_handling():
-            try:
-                self._execute_build_task(
-                    build.id,
-                    request.git_url,
-                    request.branch,
-                    request.build_script,
-                    request.build_type,
-                    request.docker_mode,
-                    request.image_name,
-                    request.image_tag,
-                    request.dockerfile_path,
-                    request.build_context,
-                    request.docker_image,
-                    request.docker_compose_file
-                )
-            except Exception as e:
-                # Log any uncaught exceptions
-                import traceback
-                db_error = SessionLocal()
-                try:
-                    build_error = db_error.query(Build).filter(Build.id == build.id).first()
-                    if build_error:
-                        build_error.status = "failed"
-                        build_error.error_message = f"Critical error: {str(e)}"
-                        db_error.commit()
-                        if build_error.log_path:
-                            with open(build_error.log_path, "a", encoding="utf-8") as f:
-                                f.write(f"\nCRITICAL ERROR: {str(e)}\n")
-                                f.write(f"Traceback: {traceback.format_exc()}\n")
-                finally:
-                    db_error.close()
-        
-        background_tasks.add_task(run_build_with_error_handling)
 
+        request_runner = BuildRunner(
+            workspace_dir=self.workspace_dir,
+            logs_dir=self.logs_dir,
+            db_session=self.db,
+            timeout_seconds=self.timeout_seconds,
+        )
+        request_runner._initialize_stages(
+            build.id,
+            build.build_type,
+            build.docker_mode,
+        )
+
+        request_duration = time.time() - request_start_time
+        request_runner._log(
+            build.log_path,
+            (
+                "HTTP request start: "
+                f"{datetime.utcfromtimestamp(request_start_time).isoformat()}Z"
+            ),
+        )
+        request_runner._log(
+            build.log_path,
+            f"HTTP response sent (Request duration: {request_duration:.4f}s)",
+        )
+
+        execution = BuildExecutionInput(
+            repo_url=project.repo_url,
+            workspace_dir=self.workspace_dir,
+            logs_dir=self.logs_dir,
+            timeout_seconds=self.timeout_seconds,
+        )
+        background_tasks.add_task(
+            run_build_worker,
+            build.id,
+            execution.model_dump(),
+        )
         return self._build_to_response(build)
 
-    def _execute_build_task(self, build_id: int, git_url: Optional[str], branch: Optional[str], build_script: Optional[str] = None, build_type: str = "source", docker_mode: Optional[str] = "build_from_git", image_name: Optional[str] = None, image_tag: Optional[str] = None, dockerfile_path: Optional[str] = None, build_context: Optional[str] = None, docker_image: Optional[str] = None, docker_compose_file: Optional[str] = None) -> None:
-        """
-        Execute build asynchronously.
+    def _execute_build_task(self, build_id: int, repo_url: str) -> None:
+        """Execute a build using this worker's database session."""
+        build = self.db.get(Build, build_id)
+        if build is None:
+            raise ValueError(f"Build {build_id} not found")
 
-        Args:
-            build_id: Build database ID
-            git_url: Git repository URL (optional for existing docker image mode)
-            branch: Git branch (optional for existing docker image mode)
-            build_script: Custom build script (optional)
-            build_type: Build type (source or docker)
-            docker_mode: Docker mode (build_from_git, existing_image)
-            image_name: Docker image name (for docker build)
-            image_tag: Docker image tag (for docker build)
-            dockerfile_path: Path to Dockerfile (for docker build)
-            build_context: Build context (for docker build)
-            docker_image: Full docker image name with tag (for existing image mode)
-            docker_compose_file: Docker Compose file (for existing image mode)
-        """
-        db = SessionLocal()
+        start_time = time.time()
+        deadline = time.monotonic() + self.timeout_seconds
+        runner = BuildRunner(
+            workspace_dir=self.workspace_dir,
+            logs_dir=self.logs_dir,
+            db_session=self.db,
+            timeout_seconds=self.timeout_seconds,
+            deadline=deadline,
+        )
+
         try:
-            build = db.query(Build).filter(Build.id == build_id).first()
-            if not build:
-                return
-
-            start_time = time.time()
-            self.runner._log(build.log_path, f"Build start timestamp: {datetime.utcnow().isoformat()}Z")
-
-            success, commit_hash, error_message, artifact_path, artifact_type, detection_result = self.runner.execute_build(
-                git_url=git_url,
-                project_name=build.project_name,
-                branch=branch,
-                build_id=build.id,
-                build_script=build_script,
-                build_type=build_type,
-                docker_mode=docker_mode,
-                image_name=image_name,
-                image_tag=image_tag,
-                dockerfile_path=dockerfile_path,
-                build_context=build_context,
-                docker_image=docker_image,
-                docker_compose_file=docker_compose_file
+            runner._log(
+                build.log_path,
+                f"Build start timestamp: {datetime.utcnow().isoformat()}Z",
             )
-            
-            # Update build record
+            (
+                success,
+                commit_hash,
+                error_message,
+                artifact_path,
+                artifact_type,
+                detection_result,
+            ) = runner.execute_build(
+                git_url=repo_url,
+                project_name=build.project_name,
+                branch=build.branch,
+                build_id=build.id,
+                build_script=build.build_script,
+                build_type=build.build_type,
+                docker_mode=build.docker_mode,
+                image_name=build.image_name,
+                image_tag=build.image_tag,
+                dockerfile_path=build.dockerfile_path,
+                build_context=build.build_context,
+                docker_image=build.docker_image,
+                docker_compose_file=build.docker_compose_file,
+            )
+
             end_time = datetime.utcnow()
             duration = int(time.time() - start_time)
-            
-            self.runner._log(build.log_path, f"Build finish timestamp: {end_time.isoformat()}Z")
-            self.runner._log(build.log_path, f"Build duration: {duration}s")
+
+            runner._log(
+                build.log_path,
+                f"Build finish timestamp: {end_time.isoformat()}Z",
+            )
+            runner._log(build.log_path, f"Build duration: {duration}s")
 
             build.status = "success" if success else "failed"
             build.commit_hash = commit_hash
@@ -171,7 +208,6 @@ class BuildService:
             build.end_time = end_time
             build.duration = duration
             
-            # Save detection results if available
             if detection_result and success:
                 build.detected_framework = detection_result.get('framework')
                 build.detected_runtime = detection_result.get('runtime')
@@ -182,24 +218,70 @@ class BuildService:
                 build.recommended_service_name = detection_result.get('recommended_service_name')
 
             if not success:
-                build.error_message = error_message
+                build.error_message = error_message or "Build failed"
+            else:
+                build.error_message = None
 
-            db.commit()
-            
-        except Exception as e:
-            # Handle unexpected errors
-            end_time = datetime.utcnow()
-            duration = int(time.time() - start_time)
-            
-            if build:
-                build.status = "failed"
-                build.end_time = end_time
-                build.duration = duration
-                build.error_message = f"Unexpected error: {str(e)}"
-                
-                db.commit()
-        finally:
-            db.close()
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def _mark_build_failed(
+        self,
+        build_id: int,
+        error: Exception,
+        worker_started_at: float,
+        worker_traceback: str,
+    ) -> None:
+        """Persist a terminal failure after an unexpected worker error."""
+        build = self.db.get(Build, build_id)
+        if build is None:
+            return
+
+        end_time = datetime.utcnow()
+        duration = int(time.time() - worker_started_at)
+        error_message = str(error)
+
+        build.status = "failed"
+        build.end_time = end_time
+        build.duration = duration
+        build.error_message = error_message
+
+        running_stages = (
+            self.db.query(BuildStage)
+            .filter(
+                BuildStage.build_id == build_id,
+                BuildStage.status == "running",
+            )
+            .all()
+        )
+        for stage in running_stages:
+            stage.status = "failed"
+            stage.finished_at = end_time
+            stage.error_message = error_message
+            if stage.started_at:
+                stage.duration = int(
+                    (end_time - stage.started_at).total_seconds()
+                )
+
+        self.db.commit()
+
+        if build.log_path:
+            runner = BuildRunner(
+                workspace_dir=self.workspace_dir,
+                logs_dir=self.logs_dir,
+                timeout_seconds=self.timeout_seconds,
+            )
+            runner._log(
+                build.log_path,
+                f"=== Build #{build.id} Failed after {duration}s ===",
+            )
+            runner._log(build.log_path, f"Error: {error_message}")
+            runner._log(
+                build.log_path,
+                f"Traceback:\n{worker_traceback}",
+            )
 
     def get_build_status(self, build_id: int) -> Optional[BuildResponse]:
         """

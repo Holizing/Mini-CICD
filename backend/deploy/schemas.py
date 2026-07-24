@@ -1,30 +1,81 @@
-from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class DeployStartRequest(BaseModel):
-    build_id: int
-    project_id: int
-    project_name: str
-    branch: Optional[str] = None  # Optional for existing docker image mode
-    server_ip: str
-    server_user: str = Field(default="root")
+    model_config = ConfigDict(extra="ignore")
+
+    build_id: int = Field(gt=0)
+    server_ip: str = Field(min_length=1, max_length=255)
+    server_user: str = Field(default="root", min_length=1, max_length=255)
     server_password: Optional[str] = None
     server_ssh_key: Optional[str] = None
-    deploy_path: Optional[str] = None  # Required for source deploy
-    service_name: Optional[str] = None  # Required for source deploy
-    deploy_type: str = Field(default="source")  # source, docker
+    deploy_path: Optional[str] = Field(default=None, max_length=500)
+    service_name: Optional[str] = Field(default=None, max_length=255)
     deploy_script: Optional[str] = None
-    # Docker-specific fields
-    docker_mode: Optional[str] = Field(default="build_from_git")  # build_from_git, existing_image
-    container_name: Optional[str] = None  # Required for docker deploy
-    image_name: Optional[str] = None  # Required for docker deploy
-    image_tag: Optional[str] = "latest"  # Default to latest
-    port_mapping: Optional[str] = None  # e.g. "8080:80" for docker deploy
-    # Existing docker image mode fields
-    docker_image: Optional[str] = None  # Full image name with tag (e.g., nginx:latest)
-    docker_compose_file: Optional[str] = None  # Docker Compose file for existing image
+    container_name: Optional[str] = Field(default=None, max_length=255)
+    port_mapping: Optional[str] = Field(default=None, max_length=100)
+
+    @field_validator(
+        "server_ip",
+        "server_user",
+        "server_password",
+        "server_ssh_key",
+        "deploy_path",
+        "service_name",
+        "deploy_script",
+        "container_name",
+        "port_mapping",
+    )
+    @classmethod
+    def normalize_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("deploy_path")
+    @classmethod
+    def validate_deploy_path(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.startswith("/"):
+            raise ValueError("deploy_path must be an absolute Linux path")
+        return value
+
+    @model_validator(mode="after")
+    def validate_authentication(self):
+        if not self.server_password and not self.server_ssh_key:
+            raise ValueError("server_password or server_ssh_key is required")
+        return self
+
+
+class DeployExecutionInput(BaseModel):
+    build_id: int
+    server_ip: str
+    server_user: str
+    server_password: Optional[str] = None
+    server_ssh_key: Optional[str] = None
+    deploy_path: Optional[str] = None
+    service_name: Optional[str] = None
+    deploy_type: Literal["source", "docker"]
+    deploy_script: Optional[str] = None
+    docker_mode: Optional[Literal["build_from_git", "existing_image"]] = None
+    container_name: Optional[str] = None
+    image_name: Optional[str] = None
+    image_tag: Optional[str] = None
+    port_mapping: Optional[str] = None
+    docker_image: Optional[str] = None
+    docker_compose_file: Optional[str] = None
+    workspace_dir: str
+    logs_dir: str
+    timeout_seconds: int = Field(ge=1)
 
 
 class DeployResponse(BaseModel):

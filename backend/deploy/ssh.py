@@ -1,14 +1,39 @@
 import paramiko
+import time
 from typing import Tuple, Optional
 
 
 class SSHClient:
-    def __init__(self, host: str, username: str, password: Optional[str] = None, key: Optional[str] = None):
+    def __init__(
+        self,
+        host: str,
+        username: str,
+        password: Optional[str] = None,
+        key: Optional[str] = None,
+        timeout_seconds: int = 600,
+        deadline: Optional[float] = None,
+    ):
         self.host = host
         self.username = username
         self.password = password
         self.key = key
+        self.timeout_seconds = timeout_seconds
+        self.deadline = deadline or (time.monotonic() + timeout_seconds)
         self.client = None
+
+    def _remaining_timeout(self) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Deploy timed out after {self.timeout_seconds} seconds"
+            )
+        return max(0.1, remaining)
+
+    def _open_sftp(self):
+        timeout = self._remaining_timeout()
+        sftp = self.client.open_sftp()
+        sftp.get_channel().settimeout(timeout)
+        return sftp
 
     def connect(self) -> Tuple[bool, str]:
         """
@@ -20,6 +45,8 @@ class SSHClient:
         try:
             self.client = paramiko.SSHClient()
             self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            connection_timeout = min(60.0, self._remaining_timeout())
+            banner_timeout = min(30.0, connection_timeout)
 
             if self.key:
                 # Connect using SSH key
@@ -31,9 +58,9 @@ class SSHClient:
                     hostname=self.host,
                     username=self.username,
                     pkey=key_file,
-                    timeout=60,  # Increased from 30 to 60 seconds
-                    auth_timeout=60,
-                    banner_timeout=30
+                    timeout=connection_timeout,
+                    auth_timeout=connection_timeout,
+                    banner_timeout=banner_timeout,
                 )
             else:
                 # Connect using password
@@ -43,9 +70,9 @@ class SSHClient:
                     hostname=self.host,
                     username=self.username,
                     password=self.password,
-                    timeout=60,  # Increased from 30 to 60 seconds
-                    auth_timeout=60,
-                    banner_timeout=30
+                    timeout=connection_timeout,
+                    auth_timeout=connection_timeout,
+                    banner_timeout=banner_timeout,
                 )
 
             return True, ""
@@ -87,7 +114,11 @@ class SSHClient:
 
             # Only use PTY if explicitly requested (for interactive commands)
             # For simple commands, PTY is not needed and can cause hanging
-            stdin, stdout, stderr = self.client.exec_command(command, timeout=300, get_pty=use_pty)
+            stdin, stdout, stderr = self.client.exec_command(
+                command,
+                timeout=self._remaining_timeout(),
+                get_pty=use_pty,
+            )
 
             # Read output
             stdout_str = stdout.read().decode('utf-8')
@@ -125,7 +156,7 @@ class SSHClient:
             return False, "SSH client not connected"
 
         try:
-            sftp = self.client.open_sftp()
+            sftp = self._open_sftp()
             sftp.put(local_path, remote_path)
             sftp.close()
             return True, ""
@@ -158,7 +189,7 @@ class SSHClient:
             if not os.path.isdir(local_dir):
                 return False, f"Local path is not a directory: {local_dir}"
 
-            sftp = self.client.open_sftp()
+            sftp = self._open_sftp()
 
             # Create remote directory if it doesn't exist
             try:

@@ -41,6 +41,10 @@ code {
   min-height: 100vh;
 }
 
+.execution-grid > * {
+  min-width: 0;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -71,6 +75,7 @@ code {
 
   .app-sidebar {
     width: 100% !important;
+    max-width: 100vw;
     min-height: auto !important;
     padding: 0 !important;
     overflow-x: auto;
@@ -91,6 +96,11 @@ code {
   }
 
   .app-shell__content {
+    width: 100%;
     padding: 18px 14px !important;
+  }
+
+  .execution-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
   }
 }

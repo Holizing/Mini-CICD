@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { buildService } from '../services/buildService'
+import { projectService } from '../../project/services/projectService'
 import StatusBadge from '../../../shared/components/StatusBadge'
 import BuildLog from '../components/BuildLog'
 
 const Build = () => {
   const [projectId, setProjectId] = useState('')
-  const [projectName, setProjectName] = useState('')
-  const [branch, setBranch] = useState('main')
-  const [gitUrl, setGitUrl] = useState('')
+  const [projects, setProjects] = useState([])
+  const [projectsLoading, setProjectsLoading] = useState(true)
+  const [projectsError, setProjectsError] = useState('')
   const [buildType, setBuildType] = useState('source')
   const [buildScript, setBuildScript] = useState('')
   // Docker-specific build fields
@@ -28,6 +30,40 @@ const Build = () => {
   const [selectedStage, setSelectedStage] = useState(null)
   const [stageLog, setStageLog] = useState('')
   const [viewMode, setViewMode] = useState('timeline') // 'timeline' or 'raw'
+
+  const selectedProject = projects.find((project) => project.id === Number(projectId))
+  const startDisabled = loading || projectsLoading || !selectedProject
+
+  useEffect(() => {
+    let active = true
+
+    const fetchProjects = async () => {
+      try {
+        setProjectsLoading(true)
+        setProjectsError('')
+        const response = await projectService.getProjects({
+          status: 'active',
+          limit: 100,
+        })
+        if (active) {
+          setProjects(response.projects || [])
+        }
+      } catch (err) {
+        if (active) {
+          setProjectsError(err.response?.data?.detail || 'Failed to load projects')
+        }
+      } finally {
+        if (active) {
+          setProjectsLoading(false)
+        }
+      }
+    }
+
+    fetchProjects()
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     // Poll build status if running
@@ -90,16 +126,12 @@ const Build = () => {
   const handleStartBuild = async (e) => {
     e.preventDefault()
 
-    if (!projectId || !projectName) {
-      setError('Please fill in all required fields')
+    if (!selectedProject) {
+      setError('Please select an active project')
       return
     }
 
     if (buildType === 'docker' && dockerMode === 'build_from_git') {
-      if (!branch || !gitUrl) {
-        setError('Branch and Git URL are required for Build From Git mode')
-        return
-      }
       if (!imageName) {
         setError('Image Name is required for Docker build')
         return
@@ -111,11 +143,6 @@ const Build = () => {
         setError('Docker Image is required for Existing Image mode')
         return
       }
-    }
-
-    if (buildType === 'source' && (!branch || !gitUrl)) {
-      setError('Branch and Git URL are required for Source Deploy')
-      return
     }
 
     try {
@@ -130,9 +157,6 @@ const Build = () => {
 
       const response = await buildService.startBuild({
         project_id: parseInt(projectId),
-        project_name: projectName,
-        branch: buildType === 'docker' && dockerMode === 'existing_image' ? undefined : branch,
-        git_url: buildType === 'docker' && dockerMode === 'existing_image' ? undefined : gitUrl,
         build_type: buildType,
         build_script: buildScript || undefined,
         docker_mode: buildType === 'docker' ? dockerMode : undefined,
@@ -173,7 +197,7 @@ const Build = () => {
         Build
       </h1>
 
-      <div style={{
+      <div className="execution-grid" style={{
         display: 'grid',
         gridTemplateColumns: '1fr 1fr',
         gap: '24px',
@@ -204,13 +228,12 @@ const Build = () => {
                 color: '#374151',
                 marginBottom: '6px'
               }}>
-                Project ID
+                Project
               </label>
-              <input
-                type="number"
+              <select
                 value={projectId}
                 onChange={(e) => setProjectId(e.target.value)}
-                placeholder="1"
+                disabled={projectsLoading}
                 required
                 style={{
                   width: '100%',
@@ -219,122 +242,84 @@ const Build = () => {
                   borderRadius: '6px',
                   fontSize: '14px',
                   outline: 'none',
-                  transition: 'border-color 0.2s'
+                  backgroundColor: projectsLoading ? '#f3f4f6' : 'white'
                 }}
-                onFocus={(e) => {
-                  e.target.style.borderColor = '#3b82f6'
-                }}
-                onBlur={(e) => {
-                  e.target.style.borderColor = '#d1d5db'
-                }}
-              />
+              >
+                <option value="">
+                  {projectsLoading ? 'Loading projects...' : 'Select an active project'}
+                </option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{
-                display: 'block',
-                fontSize: '14px',
-                fontWeight: '500',
-                color: '#374151',
-                marginBottom: '6px'
+            {projectsError && (
+              <div style={{
+                backgroundColor: '#fee2e2',
+                color: '#991b1b',
+                padding: '12px',
+                borderRadius: '6px',
+                marginBottom: '16px',
+                fontSize: '14px'
               }}>
-                Project Name
-              </label>
-              <input
-                type="text"
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-                placeholder="my-project"
-                required
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: '1px solid #d1d5db',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  outline: 'none',
-                  transition: 'border-color 0.2s'
-                }}
-                onFocus={(e) => {
-                  e.target.style.borderColor = '#3b82f6'
-                }}
-                onBlur={(e) => {
-                  e.target.style.borderColor = '#d1d5db'
-                }}
-              />
-            </div>
+                {projectsError}
+              </div>
+            )}
 
-            {buildType !== 'docker' || dockerMode !== 'existing_image' ? (
-              <>
-                <div style={{ marginBottom: '16px' }}>
-                  <label style={{
-                    display: 'block',
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    color: '#374151',
-                    marginBottom: '6px'
-                  }}>
-                    Branch
-                  </label>
-                  <input
-                    type="text"
-                    value={branch}
-                    onChange={(e) => setBranch(e.target.value)}
-                    placeholder="main"
-                    required
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      border: '1px solid #d1d5db',
-                      borderRadius: '6px',
-                      fontSize: '14px',
-                      outline: 'none',
-                      transition: 'border-color 0.2s'
-                    }}
-                    onFocus={(e) => {
-                      e.target.style.borderColor = '#3b82f6'
-                    }}
-                    onBlur={(e) => {
-                      e.target.style.borderColor = '#d1d5db'
-                    }}
-                  />
-                </div>
+            {!projectsLoading && !projectsError && projects.length === 0 && (
+              <div style={{
+                padding: '12px 0',
+                marginBottom: '16px',
+                color: '#6b7280',
+                fontSize: '14px'
+              }}>
+                No active projects.{' '}
+                <Link to="/projects" style={{ color: '#2563eb', fontWeight: '600' }}>
+                  Open Projects
+                </Link>
+              </div>
+            )}
 
-                <div style={{ marginBottom: '16px' }}>
-                  <label style={{
-                    display: 'block',
-                    fontSize: '14px',
-                    fontWeight: '500',
-                    color: '#374151',
-                    marginBottom: '6px'
+            {selectedProject && (
+              <div style={{
+                borderTop: '1px solid #e5e7eb',
+                borderBottom: '1px solid #e5e7eb',
+                padding: '12px 0',
+                marginBottom: '16px',
+                display: 'grid',
+                gap: '8px'
+              }}>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '84px minmax(0, 1fr)',
+                  gap: '8px',
+                  fontSize: '13px'
+                }}>
+                  <span style={{ color: '#6b7280' }}>Repository</span>
+                  <span style={{
+                    color: '#111827',
+                    fontFamily: 'monospace',
+                    overflowWrap: 'anywhere'
                   }}>
-                    Git URL
-                  </label>
-                  <input
-                    type="text"
-                    value={gitUrl}
-                    onChange={(e) => setGitUrl(e.target.value)}
-                    placeholder="https://github.com/username/repo.git"
-                    required
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      border: '1px solid #d1d5db',
-                      borderRadius: '6px',
-                      fontSize: '14px',
-                      outline: 'none',
-                      transition: 'border-color 0.2s'
-                    }}
-                    onFocus={(e) => {
-                      e.target.style.borderColor = '#3b82f6'
-                    }}
-                    onBlur={(e) => {
-                      e.target.style.borderColor = '#d1d5db'
-                    }}
-                  />
+                    {selectedProject.repo_url}
+                  </span>
                 </div>
-              </>
-            ) : null}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '84px minmax(0, 1fr)',
+                  gap: '8px',
+                  fontSize: '13px'
+                }}>
+                  <span style={{ color: '#6b7280' }}>Branch</span>
+                  <span style={{ color: '#111827', fontFamily: 'monospace' }}>
+                    {selectedProject.branch}
+                  </span>
+                </div>
+              </div>
+            )}
 
             <div style={{ marginBottom: '16px' }}>
               <label style={{
@@ -709,26 +694,26 @@ const Build = () => {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={startDisabled}
               style={{
                 width: '100%',
                 padding: '12px',
-                backgroundColor: loading ? '#9ca3af' : '#3b82f6',
+                backgroundColor: startDisabled ? '#9ca3af' : '#3b82f6',
                 color: 'white',
                 border: 'none',
                 borderRadius: '6px',
                 fontSize: '14px',
                 fontWeight: '600',
-                cursor: loading ? 'not-allowed' : 'pointer',
+                cursor: startDisabled ? 'not-allowed' : 'pointer',
                 transition: 'background-color 0.2s'
               }}
               onMouseEnter={(e) => {
-                if (!loading) {
+                if (!startDisabled) {
                   e.target.style.backgroundColor = '#2563eb'
                 }
               }}
               onMouseLeave={(e) => {
-                if (!loading) {
+                if (!startDisabled) {
                   e.target.style.backgroundColor = '#3b82f6'
                 }
               }}

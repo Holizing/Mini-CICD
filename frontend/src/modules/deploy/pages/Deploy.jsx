@@ -1,14 +1,15 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { deployService } from '../services/deployService'
 import { buildService } from '../../build/services/buildService'
+import { projectService } from '../../project/services/projectService'
 import StatusBadge from '../../../shared/components/StatusBadge'
 import DeployLog from '../components/DeployLog'
 
 const Deploy = () => {
   const [buildId, setBuildId] = useState('')
-  const [projectId, setProjectId] = useState('')
-  const [projectName, setProjectName] = useState('')
-  const [branch, setBranch] = useState('main')
+  const [selectedProject, setSelectedProject] = useState(null)
+  const [projectLoading, setProjectLoading] = useState(false)
+  const [projectError, setProjectError] = useState('')
   const [serverIp, setServerIp] = useState('')
   const [serverUser, setServerUser] = useState('root')
   const [serverPassword, setServerPassword] = useState('')
@@ -33,11 +34,23 @@ const Deploy = () => {
   const [logLoading, setLogLoading] = useState(false)
   const [error, setError] = useState(null)
   const [builds, setBuilds] = useState([])
+  const [buildsLoading, setBuildsLoading] = useState(true)
+  const [buildsError, setBuildsError] = useState('')
   // Stage-related state
   const [stages, setStages] = useState([])
   const [selectedStage, setSelectedStage] = useState(null)
   const [stageLog, setStageLog] = useState('')
   const [viewMode, setViewMode] = useState('timeline') // 'timeline' or 'raw'
+  const projectRequestId = useRef(0)
+
+  const selectedBuild = builds.find((build) => build.id === Number(buildId))
+  const projectReady = (
+    selectedBuild
+    && selectedProject
+    && selectedProject.id === selectedBuild.project_id
+    && selectedProject.status === 'active'
+  )
+  const startDisabled = loading || buildsLoading || projectLoading || !projectReady
 
   useEffect(() => {
     fetchSuccessfulBuilds()
@@ -87,11 +100,16 @@ const Deploy = () => {
 
   const fetchSuccessfulBuilds = async () => {
     try {
+      setBuildsLoading(true)
+      setBuildsError('')
       const response = await buildService.getBuildHistory({ limit: 50 })
       const successfulBuilds = response.builds.filter(b => b.status === 'success')
       setBuilds(successfulBuilds)
     } catch (err) {
       console.error('Failed to fetch builds:', err)
+      setBuildsError(err.response?.data?.detail || 'Failed to load successful builds')
+    } finally {
+      setBuildsLoading(false)
     }
   }
 
@@ -128,8 +146,18 @@ const Deploy = () => {
   const handleStartDeploy = async (e) => {
     e.preventDefault()
 
-    if (!buildId || !projectId || !projectName || !serverIp) {
-      setError('Please fill in all required fields')
+    if (!selectedBuild || !projectReady || !serverIp) {
+      setError('Please select a build with an active project and fill in all required fields')
+      return
+    }
+
+    if (authType === 'password' && !serverPassword) {
+      setError('Server Password is required')
+      return
+    }
+
+    if (authType === 'ssh_key' && !serverSshKey) {
+      setError('SSH Key path is required')
       return
     }
 
@@ -140,11 +168,6 @@ const Deploy = () => {
 
     if (deployType === 'docker' && !containerName) {
       setError('Container Name is required for Docker deploy')
-      return
-    }
-
-    if (deployType === 'docker' && dockerMode === 'existing_image' && !dockerImage) {
-      setError('Docker Image is required for Existing Image mode')
       return
     }
 
@@ -160,24 +183,15 @@ const Deploy = () => {
 
       const response = await deployService.startDeploy({
         build_id: parseInt(buildId),
-        project_id: parseInt(projectId),
-        project_name: projectName,
-        branch: deployType === 'docker' && dockerMode === 'existing_image' ? undefined : branch,
         server_ip: serverIp,
         server_user: serverUser,
         server_password: authType === 'password' ? serverPassword || undefined : undefined,
         server_ssh_key: authType === 'ssh_key' ? serverSshKey || undefined : undefined,
         deploy_path: deployType === 'source' ? deployPath : undefined,
         service_name: deployType === 'source' ? serviceName : undefined,
-        deploy_type: deployType,
         deploy_script: deployScript || undefined,
-        docker_mode: deployType === 'docker' ? dockerMode : undefined,
         container_name: deployType === 'docker' ? containerName : undefined,
-        port_mapping: deployType === 'docker' ? portMapping || undefined : undefined,
-        image_name: deployType === 'docker' && dockerMode === 'build_from_git' ? imageName : undefined,
-        image_tag: deployType === 'docker' && dockerMode === 'build_from_git' ? imageTag : undefined,
-        docker_image: deployType === 'docker' && dockerMode === 'existing_image' ? dockerImage : undefined,
-        docker_compose_file: deployType === 'docker' && dockerMode === 'existing_image' ? dockerComposeFile : undefined
+        port_mapping: deployType === 'docker' ? portMapping || undefined : undefined
       })
 
       setCurrentDeploy(response)
@@ -192,64 +206,72 @@ const Deploy = () => {
     }
   }
 
-  const handleBuildChange = (e) => {
+  const handleBuildChange = async (e) => {
     const selectedBuildId = e.target.value
     setBuildId(selectedBuildId)
+    setSelectedProject(null)
+    setProjectLoading(false)
+    setProjectError('')
+    setDeployPath('')
+    setServiceName('')
+    setDeployScript('')
+    setDeployScriptSuggestion('')
+    const requestId = ++projectRequestId.current
 
     const selectedBuild = builds.find(b => b.id === parseInt(selectedBuildId))
-    if (selectedBuild) {
-      setProjectId(selectedBuild.project_id)
-      setProjectName(selectedBuild.project_name)
-      setBranch(selectedBuild.branch)
-      setDeployType(selectedBuild.build_type || 'source')
-      if (selectedBuild.build_type === 'docker') {
-        setContainerName(`${selectedBuild.project_name.toLowerCase().replace(/\s+/g, '-')}-container`)
-        // Set docker mode from build
-        if (selectedBuild.docker_mode) {
-          setDockerMode(selectedBuild.docker_mode)
-        }
+    if (!selectedBuild) {
+      setDeployType('source')
+      setDockerMode('build_from_git')
+      setContainerName('')
+      setImageName('')
+      setImageTag('latest')
+      setDockerImage('')
+      setDockerComposeFile('')
+      return
+    }
+
+    setDeployType(selectedBuild.build_type || 'source')
+    setDockerMode(selectedBuild.docker_mode || 'build_from_git')
+    setContainerName(
+      selectedBuild.build_type === 'docker'
+        ? `${selectedBuild.project_name.toLowerCase().replace(/\s+/g, '-')}-container`
+        : ''
+    )
+    setImageName(selectedBuild.image_name || '')
+    setImageTag(selectedBuild.image_tag || 'latest')
+    setDockerImage(selectedBuild.docker_image || '')
+    setDockerComposeFile(selectedBuild.docker_compose_file || '')
+    setDeployScriptSuggestion(selectedBuild.recommended_deploy_script || '')
+
+    try {
+      setProjectLoading(true)
+      const project = await projectService.getProject(selectedBuild.project_id)
+      if (requestId !== projectRequestId.current) {
+        return
       }
-      // Auto-fill Image Name and Tag from build for Docker deploy
-      if (selectedBuild.image_name) {
-        setImageName(selectedBuild.image_name)
-      }
-      if (selectedBuild.image_tag) {
-        setImageTag(selectedBuild.image_tag)
-      }
-      // Auto-fill docker_image for existing_image mode
-      if (selectedBuild.docker_image) {
-        setDockerImage(selectedBuild.docker_image)
-      }
-      if (selectedBuild.docker_compose_file) {
-        setDockerComposeFile(selectedBuild.docker_compose_file)
+      if (project.status !== 'active') {
+        setProjectError('This build belongs to an inactive project')
+        return
       }
 
-      // Auto-fill deployment recommendations from detection results (only for successful source builds)
-      if (selectedBuild.status === 'success' && selectedBuild.build_type === 'source') {
-        if (selectedBuild.recommended_deploy_path) {
-          setDeployPath(selectedBuild.recommended_deploy_path)
-        }
-        if (selectedBuild.recommended_service_name) {
-          setServiceName(selectedBuild.recommended_service_name)
-        }
-        // Set suggestion instead of value - user can accept with Tab
-        if (selectedBuild.recommended_deploy_script) {
-          setDeployScriptSuggestion(selectedBuild.recommended_deploy_script)
-        } else {
-          setDeployScriptSuggestion('')
-        }
-      } else {
-        // Clear suggestion for non-source builds or failed builds
-        setDeployScriptSuggestion('')
+      setSelectedProject(project)
+      if (selectedBuild.build_type === 'source') {
+        setDeployPath(project.deploy_path || selectedBuild.recommended_deploy_path || '')
+        setServiceName(project.service_name || selectedBuild.recommended_service_name || '')
+      }
+    } catch (err) {
+      if (requestId === projectRequestId.current) {
+        setProjectError(
+          err.response?.status === 404
+            ? 'Project for this build no longer exists'
+            : (err.response?.data?.detail || 'Failed to load the project')
+        )
+      }
+    } finally {
+      if (requestId === projectRequestId.current) {
+        setProjectLoading(false)
       }
     }
-  }
-
-  const handleDeployTypeChange = (e) => {
-    const newType = e.target.value
-    setDeployType(newType)
-    // Clear suggestion when deploy type changes
-    setDeployScriptSuggestion('')
   }
 
   const handleDeployScriptKeyDown = (e) => {
@@ -286,7 +308,7 @@ const Deploy = () => {
         Deploy
       </h1>
 
-      <div style={{
+      <div className="execution-grid" style={{
         display: 'grid',
         gridTemplateColumns: '1fr 1fr',
         gap: '24px',
@@ -322,6 +344,7 @@ const Deploy = () => {
               <select
                 value={buildId}
                 onChange={handleBuildChange}
+                disabled={buildsLoading}
                 required
                 style={{
                   width: '100%',
@@ -330,10 +353,12 @@ const Deploy = () => {
                   borderRadius: '6px',
                   fontSize: '14px',
                   outline: 'none',
-                  backgroundColor: 'white'
+                  backgroundColor: buildsLoading ? '#f3f4f6' : 'white'
                 }}
               >
-                <option value="">Select a successful build</option>
+                <option value="">
+                  {buildsLoading ? 'Loading builds...' : 'Select a successful build'}
+                </option>
                 {builds.map((build) => (
                   <option key={build.id} value={build.id}>
                     #{build.id} - {build.project_name} ({build.branch}) - {new Date(build.start_time).toLocaleString()}
@@ -341,6 +366,49 @@ const Deploy = () => {
                 ))}
               </select>
             </div>
+
+            {buildsError && (
+              <div style={{
+                backgroundColor: '#fee2e2',
+                color: '#991b1b',
+                padding: '12px',
+                borderRadius: '6px',
+                marginBottom: '16px',
+                fontSize: '14px'
+              }}>
+                {buildsError}
+              </div>
+            )}
+
+            {!buildsLoading && !buildsError && builds.length === 0 && (
+              <div style={{
+                padding: '12px 0',
+                marginBottom: '16px',
+                color: '#6b7280',
+                fontSize: '14px'
+              }}>
+                No successful builds are available.
+              </div>
+            )}
+
+            {projectLoading && (
+              <div style={{ marginBottom: '16px', color: '#6b7280', fontSize: '14px' }}>
+                Loading project...
+              </div>
+            )}
+
+            {projectError && (
+              <div style={{
+                backgroundColor: '#fee2e2',
+                color: '#991b1b',
+                padding: '12px',
+                borderRadius: '6px',
+                marginBottom: '16px',
+                fontSize: '14px'
+              }}>
+                {projectError}
+              </div>
+            )}
 
             <div style={{ marginBottom: '16px' }}>
               <label style={{
@@ -354,10 +422,9 @@ const Deploy = () => {
               </label>
               <input
                 type="number"
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
+                value={selectedBuild?.project_id || ''}
                 placeholder="Auto-filled from build"
-                required
+                readOnly
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -367,7 +434,6 @@ const Deploy = () => {
                   outline: 'none',
                   backgroundColor: '#f9fafb'
                 }}
-                disabled
               />
             </div>
 
@@ -383,10 +449,9 @@ const Deploy = () => {
               </label>
               <input
                 type="text"
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
+                value={selectedBuild?.project_name || ''}
                 placeholder="Auto-filled from build"
-                required
+                readOnly
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -396,7 +461,6 @@ const Deploy = () => {
                   outline: 'none',
                   backgroundColor: '#f9fafb'
                 }}
-                disabled
               />
             </div>
 
@@ -413,10 +477,9 @@ const Deploy = () => {
                 </label>
                 <input
                   type="text"
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
+                  value={selectedBuild?.branch || ''}
                   placeholder="Auto-filled from build"
-                  required
+                  readOnly
                   style={{
                     width: '100%',
                     padding: '10px 12px',
@@ -426,7 +489,6 @@ const Deploy = () => {
                     outline: 'none',
                     backgroundColor: '#f9fafb'
                   }}
-                  disabled
                 />
               </div>
             ) : null}
@@ -443,8 +505,7 @@ const Deploy = () => {
               </label>
               <select
                 value={deployType}
-                onChange={handleDeployTypeChange}
-                required
+                disabled
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -452,7 +513,8 @@ const Deploy = () => {
                   borderRadius: '6px',
                   fontSize: '14px',
                   outline: 'none',
-                  backgroundColor: 'white'
+                  backgroundColor: '#f3f4f6',
+                  color: '#374151'
                 }}
               >
                 <option value="source">Source Deploy (Python, NodeJS, Java, etc.)</option>
@@ -726,7 +788,7 @@ const Deploy = () => {
                         name="dockerMode"
                         value="build_from_git"
                         checked={dockerMode === 'build_from_git'}
-                        onChange={(e) => setDockerMode(e.target.value)}
+                        disabled
                         style={{ marginRight: '8px' }}
                       />
                       Build From Git (Transfer Image)
@@ -743,7 +805,7 @@ const Deploy = () => {
                         name="dockerMode"
                         value="existing_image"
                         checked={dockerMode === 'existing_image'}
-                        onChange={(e) => setDockerMode(e.target.value)}
+                        disabled
                         style={{ marginRight: '8px' }}
                       />
                       Existing Docker Image (Pull from Registry)
@@ -895,9 +957,8 @@ const Deploy = () => {
                       <input
                         type="text"
                         value={dockerImage}
-                        onChange={(e) => setDockerImage(e.target.value)}
                         placeholder="nginx:latest"
-                        required
+                        readOnly
                         style={{
                           width: '100%',
                           padding: '10px 12px',
@@ -906,13 +967,9 @@ const Deploy = () => {
                           fontSize: '14px',
                           outline: 'none',
                           transition: 'border-color 0.2s',
-                          fontFamily: 'monospace'
-                        }}
-                        onFocus={(e) => {
-                          e.target.style.borderColor = '#3b82f6'
-                        }}
-                        onBlur={(e) => {
-                          e.target.style.borderColor = '#d1d5db'
+                          fontFamily: 'monospace',
+                          backgroundColor: '#f3f4f6',
+                          color: '#6b7280'
                         }}
                       />
                       <div style={{
@@ -937,8 +994,8 @@ const Deploy = () => {
                       <input
                         type="text"
                         value={dockerComposeFile}
-                        onChange={(e) => setDockerComposeFile(e.target.value)}
                         placeholder="docker-compose.yml"
+                        readOnly
                         style={{
                           width: '100%',
                           padding: '10px 12px',
@@ -947,13 +1004,9 @@ const Deploy = () => {
                           fontSize: '14px',
                           outline: 'none',
                           transition: 'border-color 0.2s',
-                          fontFamily: 'monospace'
-                        }}
-                        onFocus={(e) => {
-                          e.target.style.borderColor = '#3b82f6'
-                        }}
-                        onBlur={(e) => {
-                          e.target.style.borderColor = '#d1d5db'
+                          fontFamily: 'monospace',
+                          backgroundColor: '#f3f4f6',
+                          color: '#6b7280'
                         }}
                       />
                       <div style={{
@@ -1070,26 +1123,26 @@ const Deploy = () => {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={startDisabled}
               style={{
                 width: '100%',
                 padding: '12px',
-                backgroundColor: loading ? '#9ca3af' : '#10b981',
+                backgroundColor: startDisabled ? '#9ca3af' : '#10b981',
                 color: 'white',
                 border: 'none',
                 borderRadius: '6px',
                 fontSize: '14px',
                 fontWeight: '600',
-                cursor: loading ? 'not-allowed' : 'pointer',
+                cursor: startDisabled ? 'not-allowed' : 'pointer',
                 transition: 'background-color 0.2s'
               }}
               onMouseEnter={(e) => {
-                if (!loading) {
+                if (!startDisabled) {
                   e.target.style.backgroundColor = '#059669'
                 }
               }}
               onMouseLeave={(e) => {
-                if (!loading) {
+                if (!startDisabled) {
                   e.target.style.backgroundColor = '#10b981'
                 }
               }}
