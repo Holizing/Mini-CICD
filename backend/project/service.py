@@ -39,6 +39,15 @@ class ProjectService:
             return None
 
         updates = data.model_dump(exclude_unset=True)
+        from backend.webhook.service import ensure_project_automation_unique
+
+        ensure_project_automation_unique(
+            self.db,
+            project,
+            repo_url=updates.get("repo_url"),
+            branch=updates.get("branch"),
+            status=updates.get("status"),
+        )
         for key, value in updates.items():
             setattr(project, key, value)
 
@@ -51,6 +60,9 @@ class ProjectService:
         if not project:
             return False
 
+        from backend.webhook.service import delete_project_automation
+
+        delete_project_automation(self.db, project_id)
         self.db.delete(project)
         self.db.commit()
         return True

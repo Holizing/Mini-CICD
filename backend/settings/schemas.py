@@ -83,7 +83,12 @@ class SettingsUpdate(BaseModel):
     @field_validator("webhook_secret")
     @classmethod
     def strip_optional_webhook_secret(cls, value: Optional[str]) -> Optional[str]:
-        return normalize_optional_text(value)
+        normalized = normalize_optional_text(value)
+        if normalized is not None and len(normalized) < 32:
+            raise ValueError(
+                "GitHub webhook secret must contain at least 32 characters"
+            )
+        return normalized
 
 
 class SettingsResponse(SettingsBase):

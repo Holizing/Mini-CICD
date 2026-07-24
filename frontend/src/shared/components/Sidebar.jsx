@@ -7,6 +7,7 @@ const MENU_ITEMS = [
   { path: '/build', label: 'Build' },
   { path: '/deploy', label: 'Deploy' },
   { path: '/history', label: 'History' },
+  { path: '/automation', label: 'Automation' },
   { path: '/settings', label: 'Settings' },
 ]
 

@@ -13,6 +13,7 @@ class SSHClient:
         self,
         host: str,
         username: str,
+        port: int = 22,
         password: Optional[str] = None,
         key: Optional[str] = None,
         timeout_seconds: int = 600,
@@ -20,6 +21,7 @@ class SSHClient:
         known_hosts_path: Optional[str] = None,
     ):
         self.host = host
+        self.port = port
         self.username = username
         self.password = password
         self.key = key
@@ -68,6 +70,7 @@ class SSHClient:
             banner_timeout = min(30.0, connection_timeout)
             connect_options = {
                 "hostname": self.host,
+                "port": self.port,
                 "username": self.username,
                 "timeout": connection_timeout,
                 "auth_timeout": connection_timeout,

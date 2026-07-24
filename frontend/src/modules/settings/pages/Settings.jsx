@@ -18,6 +18,15 @@ const INITIAL_FORM = {
 
 const timeoutFields = ['build_timeout_seconds', 'deploy_timeout_seconds']
 
+const INITIAL_TARGET = {
+  configured: false,
+  host: '',
+  port: 22,
+  server_user: '',
+  private_key_path: '',
+  known_hosts_path: '',
+}
+
 function normalizeSettings(settings) {
   return {
     workspace_dir: settings.workspace_dir || '',
@@ -31,6 +40,17 @@ function normalizeSettings(settings) {
     docker_enabled: Boolean(settings.docker_enabled),
     webhook_secret: '',
     webhook_secret_configured: Boolean(settings.webhook_secret_configured),
+  }
+}
+
+function normalizeTarget(target) {
+  return {
+    configured: Boolean(target.configured),
+    host: target.host || '',
+    port: target.port || 22,
+    server_user: target.server_user || '',
+    private_key_path: target.private_key_path || '',
+    known_hosts_path: target.known_hosts_path || '',
   }
 }
 
@@ -74,6 +94,11 @@ function validateForm(formData) {
     }
   }
 
+  const webhookSecret = formData.webhook_secret.trim()
+  if (webhookSecret && webhookSecret.length < 32) {
+    return 'GitHub webhook secret must contain at least 32 characters'
+  }
+
   return ''
 }
 
@@ -98,6 +123,32 @@ function buildPayload(formData) {
   return payload
 }
 
+function validateTarget(formData) {
+  if (!formData.host.trim()) return 'Deployment host is required'
+  if (!formData.server_user.trim()) return 'Deployment user is required'
+  if (!formData.private_key_path.trim().startsWith('/')) {
+    return 'Private key path must be an absolute Linux path'
+  }
+  if (!formData.known_hosts_path.trim().startsWith('/')) {
+    return 'Known hosts path must be an absolute Linux path'
+  }
+  const port = Number(formData.port)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return 'SSH port must be an integer from 1 to 65535'
+  }
+  return ''
+}
+
+function buildTargetPayload(formData) {
+  return {
+    host: formData.host.trim(),
+    port: Number(formData.port),
+    server_user: formData.server_user.trim(),
+    private_key_path: formData.private_key_path.trim(),
+    known_hosts_path: formData.known_hosts_path.trim(),
+  }
+}
+
 function Section({ title, children }) {
   return (
     <section style={styles.section}>
@@ -110,22 +161,39 @@ function Section({ title, children }) {
 function Settings() {
   const [formData, setFormData] = useState(INITIAL_FORM)
   const [savedData, setSavedData] = useState(INITIAL_FORM)
+  const [targetData, setTargetData] = useState(INITIAL_TARGET)
+  const [savedTargetData, setSavedTargetData] = useState(INITIAL_TARGET)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [savingTarget, setSavingTarget] = useState(false)
+  const [testingTarget, setTestingTarget] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [targetError, setTargetError] = useState('')
+  const [targetSuccess, setTargetSuccess] = useState('')
 
   const hasChanges = useMemo(() => JSON.stringify(formData) !== JSON.stringify(savedData), [formData, savedData])
+  const hasTargetChanges = useMemo(
+    () => JSON.stringify(targetData) !== JSON.stringify(savedTargetData),
+    [targetData, savedTargetData],
+  )
 
   const loadSettings = async () => {
     setLoading(true)
     setError('')
 
     try {
-      const settings = normalizeSettings(await settingsService.getSettings())
+      const [settingsResponse, targetResponse] = await Promise.all([
+        settingsService.getSettings(),
+        settingsService.getDeploymentTarget(),
+      ])
+      const settings = normalizeSettings(settingsResponse)
+      const target = normalizeTarget(targetResponse)
       setFormData(settings)
       setSavedData(settings)
+      setTargetData(target)
+      setSavedTargetData(target)
     } catch (err) {
       setError(getErrorMessage(err, 'Could not load settings'))
     } finally {
@@ -190,6 +258,60 @@ function Settings() {
       setError(getErrorMessage(err, 'Could not reset settings'))
     } finally {
       setResetting(false)
+    }
+  }
+
+  const handleTargetChange = (event) => {
+    const { name, value } = event.target
+    setTargetSuccess('')
+    setTargetData((current) => ({ ...current, [name]: value }))
+  }
+
+  const handleTargetSubmit = async (event) => {
+    event.preventDefault()
+    setTargetError('')
+    setTargetSuccess('')
+    const validationError = validateTarget(targetData)
+    if (validationError) {
+      setTargetError(validationError)
+      return
+    }
+
+    setSavingTarget(true)
+    try {
+      const target = normalizeTarget(
+        await settingsService.updateDeploymentTarget(buildTargetPayload(targetData)),
+      )
+      setTargetData(target)
+      setSavedTargetData(target)
+      setTargetSuccess('Deployment target saved')
+    } catch (err) {
+      setTargetError(getErrorMessage(err, 'Could not save deployment target'))
+    } finally {
+      setSavingTarget(false)
+    }
+  }
+
+  const handleTargetTest = async () => {
+    setTargetError('')
+    setTargetSuccess('')
+    if (hasTargetChanges) {
+      setTargetError('Save deployment target changes before testing')
+      return
+    }
+
+    setTestingTarget(true)
+    try {
+      const result = await settingsService.testDeploymentTarget()
+      if (result.success) {
+        setTargetSuccess(result.message)
+      } else {
+        setTargetError(result.message)
+      }
+    } catch (err) {
+      setTargetError(getErrorMessage(err, 'Could not test deployment target'))
+    } finally {
+      setTestingTarget(false)
     }
   }
 
@@ -261,15 +383,6 @@ function Settings() {
             />
           </label>
 
-          <label style={styles.toggle}>
-            <input
-              name="auto_deploy_enabled"
-              checked={formData.auto_deploy_enabled}
-              onChange={handleChange}
-              type="checkbox"
-            />
-            <span>Auto deploy after successful build</span>
-          </label>
         </Section>
 
         <Section title="Deploy">
@@ -328,6 +441,7 @@ function Settings() {
             <input
               name="webhook_secret"
               value={formData.webhook_secret}
+              maxLength={255}
               onChange={handleChange}
               type="password"
               autoComplete="new-password"
@@ -335,11 +449,118 @@ function Settings() {
               style={styles.input}
             />
           </label>
+
+          <label style={styles.toggle}>
+            <input
+              name="auto_deploy_enabled"
+              checked={formData.auto_deploy_enabled}
+              onChange={handleChange}
+              type="checkbox"
+            />
+            <span>Auto deploy after successful webhook build</span>
+          </label>
         </Section>
 
         <div style={styles.footer}>
           <button type="submit" disabled={saving || resetting || !hasChanges} style={styles.primaryButton}>
             {saving ? 'Saving...' : 'Save settings'}
+          </button>
+        </div>
+      </form>
+
+      <form onSubmit={handleTargetSubmit} style={{ ...styles.form, marginTop: '22px' }}>
+        <div style={styles.targetHeader}>
+          <div>
+            <h2 style={{ ...styles.sectionTitle, marginBottom: 0 }}>Deployment Target</h2>
+            <p style={styles.targetState}>
+              {targetData.configured ? 'Configured' : 'Not configured'}
+              {hasTargetChanges ? ' | Unsaved changes' : ''}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleTargetTest}
+            disabled={testingTarget || savingTarget || !savedTargetData.configured}
+            style={styles.secondaryButton}
+          >
+            {testingTarget ? 'Testing...' : 'Test connection'}
+          </button>
+        </div>
+
+        {targetError && <div style={styles.error}>{targetError}</div>}
+        {targetSuccess && <div style={styles.success}>{targetSuccess}</div>}
+
+        <div style={styles.grid}>
+          <label style={styles.field}>
+            <span style={styles.label}>Host</span>
+            <input
+              name="host"
+              value={targetData.host}
+              onChange={handleTargetChange}
+              placeholder="127.0.0.1"
+              required
+              style={styles.input}
+            />
+          </label>
+
+          <label style={styles.field}>
+            <span style={styles.label}>SSH port</span>
+            <input
+              name="port"
+              value={targetData.port}
+              onChange={handleTargetChange}
+              min="1"
+              max="65535"
+              type="number"
+              required
+              style={styles.input}
+            />
+          </label>
+
+          <label style={styles.field}>
+            <span style={styles.label}>SSH user</span>
+            <input
+              name="server_user"
+              value={targetData.server_user}
+              onChange={handleTargetChange}
+              placeholder="deploy"
+              required
+              style={styles.input}
+            />
+          </label>
+
+          <label style={styles.field}>
+            <span style={styles.label}>Private key path</span>
+            <input
+              name="private_key_path"
+              value={targetData.private_key_path}
+              onChange={handleTargetChange}
+              placeholder="/home/cino/Mini-CICD/runtime/ssh/deploy_rsa"
+              required
+              style={styles.input}
+            />
+          </label>
+
+          <label style={{ ...styles.field, gridColumn: '1 / -1' }}>
+            <span style={styles.label}>Known hosts path</span>
+            <input
+              name="known_hosts_path"
+              value={targetData.known_hosts_path}
+              onChange={handleTargetChange}
+              placeholder="/home/cino/Mini-CICD/runtime/ssh/known_hosts"
+              required
+              style={styles.input}
+            />
+          </label>
+        </div>
+
+        <div style={styles.footer}>
+          <button
+            type="submit"
+            disabled={savingTarget || testingTarget || !hasTargetChanges}
+            style={styles.primaryButton}
+          >
+            {savingTarget ? 'Saving...' : 'Save deployment target'}
           </button>
         </div>
       </form>
@@ -441,6 +662,18 @@ const styles = {
   notConfigured: {
     color: '#6b7280',
     fontSize: '14px',
+  },
+  targetHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: '16px',
+    marginBottom: '18px',
+  },
+  targetState: {
+    margin: '7px 0 0',
+    color: '#6b7280',
+    fontSize: '13px',
   },
   footer: {
     display: 'flex',

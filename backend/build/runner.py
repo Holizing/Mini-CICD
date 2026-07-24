@@ -478,17 +478,24 @@ class BuildRunner:
             self._log(log_file, error_msg)
             return False, error_msg
 
-    def clone_or_pull(self, git_url: str, project_name: str, branch: str, log_file: str) -> tuple[bool, str]:
+    def clone_or_pull(
+        self,
+        git_url: str,
+        project_name: str,
+        branch: str,
+        log_file: str,
+        commit_sha: Optional[str] = None,
+    ) -> tuple[bool, str]:
         """
-        Clone repository if not exists, otherwise pull latest changes.
+        Prepare a repository at the branch head or an exact webhook commit.
 
         Returns:
             Tuple of (success: bool, error_message: str)
         """
         project_path = os.path.join(self.workspace_dir, project_name)
+        cloned = False
 
         if not os.path.exists(project_path):
-            # Clone repository
             self._log(log_file, f"Cloning repository from {git_url}...")
             success, stdout, stderr = run_command(
                 ["git", "clone", git_url, project_name],
@@ -501,9 +508,94 @@ class BuildRunner:
                 self._log(log_file, error_msg)
                 return False, error_msg
 
-            self._log(log_file, f"Repository cloned successfully")
+            cloned = True
+            self._log(log_file, "Repository cloned successfully")
+        elif not os.path.isdir(os.path.join(project_path, ".git")):
+            error_msg = (
+                f"Workspace path exists but is not a Git repository: {project_path}"
+            )
+            self._log(log_file, error_msg)
+            return False, error_msg
+        else:
+            success, stdout, stderr = run_command(
+                ["git", "remote", "set-url", "origin", git_url],
+                project_path,
+                self._remaining_timeout(),
+            )
+            if not success:
+                error_msg = f"Git remote update failed: {stderr}"
+                self._log(log_file, error_msg)
+                return False, error_msg
 
-            # Checkout branch
+        if commit_sha:
+            self._log(
+                log_file,
+                f"Fetching branch {branch} for exact commit {commit_sha}",
+            )
+            success, stdout, stderr = run_command(
+                ["git", "fetch", "--prune", "origin", branch],
+                project_path,
+                self._remaining_timeout(),
+            )
+            if not success:
+                error_msg = f"Git fetch branch {branch} failed: {stderr}"
+                self._log(log_file, error_msg)
+                return False, error_msg
+
+            success, stdout, stderr = run_command(
+                ["git", "cat-file", "-e", f"{commit_sha}^{{commit}}"],
+                project_path,
+                self._remaining_timeout(),
+            )
+            if not success:
+                error_msg = f"Webhook commit is not available: {commit_sha}"
+                self._log(log_file, error_msg)
+                return False, error_msg
+
+            success, stdout, stderr = run_command(
+                ["git", "merge-base", "--is-ancestor", commit_sha, "FETCH_HEAD"],
+                project_path,
+                self._remaining_timeout(),
+            )
+            if not success:
+                error_msg = (
+                    f"Webhook commit {commit_sha} does not belong to branch {branch}"
+                )
+                self._log(log_file, error_msg)
+                return False, error_msg
+
+            for command in (
+                ["git", "reset", "--hard"],
+                ["git", "clean", "-fdx"],
+                ["git", "checkout", "--detach", commit_sha],
+            ):
+                success, stdout, stderr = run_command(
+                    command,
+                    project_path,
+                    self._remaining_timeout(),
+                )
+                if not success:
+                    error_msg = (
+                        f"Git exact commit checkout failed: {stderr or stdout}"
+                    )
+                    self._log(log_file, error_msg)
+                    return False, error_msg
+
+            checked_out_sha = get_commit_hash(
+                project_path,
+                self._remaining_timeout(),
+            )
+            if checked_out_sha != commit_sha:
+                error_msg = (
+                    "Git checkout verification failed: "
+                    f"expected {commit_sha}, got {checked_out_sha or 'unknown'}"
+                )
+                self._log(log_file, error_msg)
+                return False, error_msg
+            self._log(log_file, f"Checked out exact commit {commit_sha}")
+            return True, ""
+
+        if cloned:
             success, stdout, stderr = run_command(
                 ["git", "checkout", branch],
                 project_path,
@@ -513,52 +605,50 @@ class BuildRunner:
                 error_msg = f"Git checkout branch {branch} failed: {stderr}"
                 self._log(log_file, error_msg)
                 return False, error_msg
-        else:
-            # Pull latest changes
-            self._log(log_file, f"Repository exists, pulling latest changes...")
+            return True, ""
 
-            # Fetch
+        self._log(log_file, "Repository exists, pulling latest changes...")
+        success, stdout, stderr = run_command(
+            ["git", "fetch"],
+            project_path,
+            self._remaining_timeout(),
+        )
+        if not success:
+            error_msg = f"Git fetch failed: {stderr}"
+            self._log(log_file, error_msg)
+            return False, error_msg
+
+        success, stdout, stderr = run_command(
+            ["git", "checkout", branch],
+            project_path,
+            self._remaining_timeout(),
+        )
+        if not success:
+            self._log(
+                log_file,
+                f"Local branch {branch} not found, creating from remote...",
+            )
             success, stdout, stderr = run_command(
-                ["git", "fetch"],
+                ["git", "checkout", "-b", branch, f"origin/{branch}"],
                 project_path,
                 self._remaining_timeout(),
             )
             if not success:
-                error_msg = f"Git fetch failed: {stderr}"
+                error_msg = f"Git checkout failed: {stderr}"
                 self._log(log_file, error_msg)
                 return False, error_msg
 
-            # Checkout branch - try direct checkout first, then create from remote if needed
-            success, stdout, stderr = run_command(
-                ["git", "checkout", branch],
-                project_path,
-                self._remaining_timeout(),
-            )
-            if not success:
-                # Branch might not exist locally, try to create from remote
-                self._log(log_file, f"Local branch {branch} not found, creating from remote...")
-                success, stdout, stderr = run_command(
-                    ["git", "checkout", "-b", branch, f"origin/{branch}"],
-                    project_path,
-                    self._remaining_timeout(),
-                )
-                if not success:
-                    error_msg = f"Git checkout failed: {stderr}"
-                    self._log(log_file, error_msg)
-                    return False, error_msg
+        success, stdout, stderr = run_command(
+            ["git", "pull", "origin", branch],
+            project_path,
+            self._remaining_timeout(),
+        )
+        if not success:
+            error_msg = f"Git pull failed: {stderr}"
+            self._log(log_file, error_msg)
+            return False, error_msg
 
-            # Pull
-            success, stdout, stderr = run_command(
-                ["git", "pull", "origin", branch],
-                project_path,
-                self._remaining_timeout(),
-            )
-            if not success:
-                error_msg = f"Git pull failed: {stderr}"
-                self._log(log_file, error_msg)
-                return False, error_msg
-
-            self._log(log_file, f"Repository updated successfully")
+        self._log(log_file, "Repository updated successfully")
 
         return True, ""
 
@@ -645,7 +735,8 @@ class BuildRunner:
         dockerfile_path: Optional[str] = "./Dockerfile",
         build_context: Optional[str] = ".",
         docker_image: Optional[str] = None,
-        docker_compose_file: Optional[str] = None
+        docker_compose_file: Optional[str] = None,
+        commit_sha: Optional[str] = None,
     ) -> tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str], dict]:
         """
         Execute the complete build pipeline.
@@ -726,11 +817,19 @@ class BuildRunner:
 
         self._log(log_file, f"Branch: {branch}")
         self._log(log_file, f"Git URL: {git_url}")
+        if commit_sha:
+            self._log(log_file, f"Requested commit: {commit_sha}")
 
         # Step 1: Clone or Pull
         self._start_stage("Clone Repository")
         self._log_stage("Clone Repository", f"Cloning repository from {git_url}...")
-        success, error = self.clone_or_pull(git_url, project_name, branch, log_file)
+        success, error = self.clone_or_pull(
+            git_url,
+            project_name,
+            branch,
+            log_file,
+            commit_sha,
+        )
         if not success:
             self._log_stage("Clone Repository", f"Clone failed: {error}")
             self._complete_stage("Clone Repository", "failed", error)

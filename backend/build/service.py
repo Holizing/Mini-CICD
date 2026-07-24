@@ -33,7 +33,11 @@ def run_build_worker(build_id: int, execution_data: dict) -> None:
                 logs_dir=execution.logs_dir,
                 timeout_seconds=execution.timeout_seconds,
             )
-            service._execute_build_task(build_id, execution.repo_url)
+            service._execute_build_task(
+                build_id,
+                execution.repo_url,
+                execution.commit_sha,
+            )
     except Exception as error:
         worker_traceback = traceback.format_exc()
         with SessionLocal() as db:
@@ -66,8 +70,28 @@ class BuildService:
         self.timeout_seconds = timeout_seconds
         self.docker_enabled = docker_enabled
 
-    def start_build(self, request: BuildStartRequest, background_tasks: BackgroundTasks) -> BuildResponse:
-        """Create a build from canonical Project data and schedule its worker."""
+    def start_build(
+        self,
+        request: BuildStartRequest,
+        background_tasks: BackgroundTasks,
+    ) -> BuildResponse:
+        """Create a manual build and schedule its worker."""
+        response, execution = self.prepare_build(request)
+        background_tasks.add_task(
+            run_build_worker,
+            response.id,
+            execution.model_dump(),
+        )
+        return response
+
+    def prepare_build(
+        self,
+        request: BuildStartRequest,
+        *,
+        commit_sha: Optional[str] = None,
+        request_source: str = "HTTP request",
+    ) -> tuple[BuildResponse, BuildExecutionInput]:
+        """Persist a build and return immutable data for its worker."""
         project = self.db.get(Project, request.project_id)
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -128,29 +152,30 @@ class BuildService:
         request_runner._log(
             build.log_path,
             (
-                "HTTP request start: "
+                f"{request_source} start: "
                 f"{datetime.utcfromtimestamp(request_start_time).isoformat()}Z"
             ),
         )
         request_runner._log(
             build.log_path,
-            f"HTTP response sent (Request duration: {request_duration:.4f}s)",
+            f"Build queued (Preparation duration: {request_duration:.4f}s)",
         )
 
         execution = BuildExecutionInput(
             repo_url=project.repo_url,
+            commit_sha=commit_sha,
             workspace_dir=self.workspace_dir,
             logs_dir=self.logs_dir,
             timeout_seconds=self.timeout_seconds,
         )
-        background_tasks.add_task(
-            run_build_worker,
-            build.id,
-            execution.model_dump(),
-        )
-        return self._build_to_response(build)
+        return self._build_to_response(build), execution
 
-    def _execute_build_task(self, build_id: int, repo_url: str) -> None:
+    def _execute_build_task(
+        self,
+        build_id: int,
+        repo_url: str,
+        commit_sha: Optional[str] = None,
+    ) -> None:
         """Execute a build using this worker's database session."""
         build = self.db.get(Build, build_id)
         if build is None:
@@ -192,6 +217,7 @@ class BuildService:
                 build_context=build.build_context,
                 docker_image=build.docker_image,
                 docker_compose_file=build.docker_compose_file,
+                commit_sha=commit_sha,
             )
 
             end_time = datetime.utcnow()

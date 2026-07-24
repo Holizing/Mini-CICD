@@ -109,6 +109,8 @@ server_ssh_key: /home/cino/Mini-CICD/runtime/ssh/deploy_rsa
 sudo cp ops/linux/mini-cicd.service /etc/systemd/system/
 sudo cp ops/linux/nginx-mini-cicd.conf /etc/nginx/sites-available/mini-cicd
 sudo ln -sfn /etc/nginx/sites-available/mini-cicd /etc/nginx/sites-enabled/mini-cicd
+sudo cp ops/linux/nginx-webhook.conf /etc/nginx/sites-available/mini-cicd-webhook
+sudo ln -sfn /etc/nginx/sites-available/mini-cicd-webhook /etc/nginx/sites-enabled/mini-cicd-webhook
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo cp ops/linux/sudoers-mini-cicd /etc/sudoers.d/mini-cicd
 sudo chmod 440 /etc/sudoers.d/mini-cicd
@@ -140,6 +142,18 @@ Auto deploy: false
 Keep `MINI_CICD_ENABLE_EXPERIMENTAL_STRATEGIES=false`. The Deploy page reports
 whether a selected build is Verified, Experimental disabled, Experimental
 enabled or Unsupported.
+
+In the Settings page, configure the deployment target:
+
+```text
+Host: 127.0.0.1
+SSH port: 22
+SSH user: deploy
+Private key: /home/cino/Mini-CICD/runtime/ssh/deploy_rsa
+Known hosts: /home/cino/Mini-CICD/runtime/ssh/known_hosts
+```
+
+Save the target and use **Test connection** before enabling Auto Deploy.
 
 ## 7. React/Vite source demo
 
@@ -192,3 +206,48 @@ curl -I http://localhost:8081
 
 The Mini-CICD source, database, workspace, logs, frontend build, SSH material
 and deployment evidence remain under `/home/cino/Mini-CICD` after the restart.
+
+## 10. GitHub webhook automation
+
+Generate a secret of at least 32 characters without printing or committing it:
+
+```bash
+umask 077
+openssl rand -hex 32 > runtime/secrets/github-webhook-secret
+```
+
+Enter that value in Settings, then configure Automation on the target Project.
+The Project repository must use `github.com`, and its branch must match the
+GitHub push branch exactly. The Settings API never returns the stored secret.
+
+Install and authenticate Tailscale on Ubuntu. Publish only the loopback webhook
+listener:
+
+```bash
+sudo tailscale funnel --bg --https=443 http://127.0.0.1:8080
+tailscale funnel status
+```
+
+Create a GitHub repository webhook with:
+
+```text
+Payload URL: https://<ubuntu-node>.<tailnet>.ts.net/api/webhooks/github
+Content type: application/json
+Secret: the value entered in Mini-CICD Settings
+Events: Just the push event
+```
+
+The Nginx listener on `127.0.0.1:8080` proxies only the exact webhook path.
+Every other path returns `404`. A valid push is acknowledged immediately and
+appears on the Automation page while Build and Deploy continue in the
+background.
+
+For a source Project, configure the build script and health endpoint. For a
+Docker Project, also configure image name/tag, Dockerfile, context, container
+name and port mapping. Webhook automation never executes a custom deploy
+script.
+
+Run the five profiles sequentially. Wait for each delivery to reach a terminal
+state before pushing the next demo branch, because this mini-project uses
+FastAPI BackgroundTasks and one shared workspace rather than a persistent task
+queue.
