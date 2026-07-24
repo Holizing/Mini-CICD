@@ -10,6 +10,7 @@ from backend.build import router as build_router
 from backend.common.database import Base, engine
 from backend.deploy import router as deploy_router
 from backend.project import router as project_router
+from backend.settings import router as settings_router
 
 
 Base.metadata.create_all(bind=engine)
@@ -25,6 +26,7 @@ app.add_middleware(
 )
 
 app.include_router(project_router)
+app.include_router(settings_router)
 app.include_router(build_router)
 app.include_router(deploy_router)
 

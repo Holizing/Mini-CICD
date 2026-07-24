@@ -1,15 +1,14 @@
 * {
-  margin: 0;
-  padding: 0;
   box-sizing: border-box;
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
   background: #f3f4f6;
   color: #111827;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -27,13 +26,71 @@ button {
 
 button:disabled {
   cursor: not-allowed;
+  opacity: 0.65;
+}
+
+a {
+  color: inherit;
 }
 
 code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+  font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
 }
 
 #root {
   min-height: 100vh;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 720px) {
+  .app-navbar {
+    padding: 0 14px !important;
+  }
+
+  .app-navbar__account {
+    gap: 8px !important;
+  }
+
+  .app-navbar__page-title,
+  .app-navbar__divider {
+    display: none !important;
+  }
+
+  .app-navbar__username {
+    max-width: 80px !important;
+  }
+
+  .app-shell {
+    flex-direction: column;
+  }
+
+  .app-sidebar {
+    width: 100% !important;
+    min-height: auto !important;
+    padding: 0 !important;
+    overflow-x: auto;
+  }
+
+  .app-sidebar__nav {
+    min-width: max-content;
+    flex-direction: row !important;
+  }
+
+  .app-sidebar__link {
+    flex: 0 0 auto;
+    padding: 12px 16px !important;
+    border-left: 0 !important;
+    border-bottom-width: 3px !important;
+    border-bottom-style: solid !important;
+    white-space: nowrap;
+  }
+
+  .app-shell__content {
+    padding: 18px 14px !important;
+  }
 }

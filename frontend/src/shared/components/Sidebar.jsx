@@ -11,6 +11,7 @@ const Sidebar = () => {
     { path: '/build', label: 'Build', icon: '🔨' },
     { path: '/deploy', label: 'Deploy', icon: '🚀' },
     { path: '/history', label: 'History', icon: '📜' },
+    { path: '/settings', label: 'Settings', icon: '⚙️' },
   ]
 
   const isActive = (path) => {
