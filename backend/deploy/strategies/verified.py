@@ -8,17 +8,17 @@ from typing import Callable, Optional
 from backend.deploy.artifacts import (
     DeploymentSafetyError,
     RemoteRelease,
-    http_health_check,
     install_user_service,
     resolve_artifact_path,
     restart_user_service,
     run_checked,
     transfer_artifact,
-    user_service_is_active,
     validate_express_artifact,
     validate_fastapi_artifact,
     validate_identifier,
     validate_remote_deploy_path,
+    wait_for_http_health,
+    wait_for_user_service_health,
 )
 
 from .base import DeploymentContext, DeploymentStrategy, StrategyTier
@@ -200,16 +200,11 @@ class VerifiedExpressStrategy(DeploymentStrategy):
 
     def validate(self, context: DeploymentContext, log_func) -> bool:
         port = _health_port(context, self.default_health_check_port)
-        valid = (
-            user_service_is_active(
-                context.ssh_client,
-                context.service_name,
-            )
-            and http_health_check(
-                context.ssh_client,
-                port,
-                context.health_check_path,
-            )
+        valid = wait_for_user_service_health(
+            context.ssh_client,
+            context.service_name,
+            port,
+            context.health_check_path,
         )
         if valid:
             context.additional_params["_release"].prune(context.ssh_client)
@@ -343,16 +338,11 @@ class VerifiedFastAPIStrategy(DeploymentStrategy):
 
     def validate(self, context: DeploymentContext, log_func) -> bool:
         port = _health_port(context, self.default_health_check_port)
-        valid = (
-            user_service_is_active(
-                context.ssh_client,
-                context.service_name,
-            )
-            and http_health_check(
-                context.ssh_client,
-                port,
-                context.health_check_path,
-            )
+        valid = wait_for_user_service_health(
+            context.ssh_client,
+            context.service_name,
+            port,
+            context.health_check_path,
         )
         if valid:
             context.additional_params["_release"].prune(context.ssh_client)
@@ -475,16 +465,11 @@ class VerifiedSpringBootJarStrategy(DeploymentStrategy):
 
     def validate(self, context: DeploymentContext, log_func) -> bool:
         port = _health_port(context, self.default_health_check_port)
-        valid = (
-            user_service_is_active(
-                context.ssh_client,
-                context.service_name,
-            )
-            and http_health_check(
-                context.ssh_client,
-                port,
-                context.health_check_path,
-            )
+        valid = wait_for_user_service_health(
+            context.ssh_client,
+            context.service_name,
+            port,
+            context.health_check_path,
         )
         if valid:
             context.additional_params["_release"].prune(context.ssh_client)
@@ -597,7 +582,7 @@ class VerifiedReactStaticStrategy(DeploymentStrategy):
             index_success
             and nginx_success
             and nginx_stdout.strip() == "active"
-            and http_health_check(
+            and wait_for_http_health(
                 context.ssh_client,
                 port,
                 context.health_check_path,

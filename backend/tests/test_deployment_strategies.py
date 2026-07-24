@@ -8,6 +8,8 @@ from backend.deploy.artifacts import (
     DeploymentSafetyError,
     validate_identifier,
     validate_remote_deploy_path,
+    wait_for_http_health,
+    wait_for_user_service_health,
 )
 from backend.deploy.strategies import get_registry, get_strategy
 from backend.deploy.strategies.base import DeploymentContext
@@ -643,6 +645,28 @@ class TestSSHHostVerification:
 
 
 class TestVerifiedStrategyExecution:
+    def test_http_readiness_uses_bounded_remote_retries(self):
+        ssh = VerifiedMockSSHClient()
+
+        assert wait_for_http_health(ssh, 8080, "/health")
+        assert "--retry 29" in ssh.executed_commands[-1]
+        assert "--retry-max-time 30" in ssh.executed_commands[-1]
+
+    def test_user_service_readiness_checks_service_before_http(self):
+        ssh = VerifiedMockSSHClient()
+
+        assert wait_for_user_service_health(
+            ssh,
+            "demo-service",
+            8080,
+            "/health",
+        )
+        assert "seq 1 30" in ssh.executed_commands[-2]
+        assert "systemctl --user is-active --quiet" in (
+            ssh.executed_commands[-2]
+        )
+        assert "curl --fail" in ssh.executed_commands[-1]
+
     @pytest.mark.parametrize(
         (
             "strategy",

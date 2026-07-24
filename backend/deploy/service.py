@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from backend.common.database import SessionLocal
 from backend.deploy.artifacts import (
-    http_health_check,
     validate_docker_image,
     validate_health_check_path,
     validate_identifier,
@@ -20,6 +19,7 @@ from backend.deploy.artifacts import (
     validate_remote_deploy_path,
     validate_remote_host,
     validate_remote_user,
+    wait_for_http_health,
 )
 from backend.deploy.models import Deploy, DeployStage
 from backend.deploy.schemas import (
@@ -808,7 +808,7 @@ class DeployService:
         else:
             self._log(log_file, f"✓ No health check configured")
 
-        if request.health_check_port and not http_health_check(
+        if request.health_check_port and not wait_for_http_health(
             ssh,
             request.health_check_port,
             request.health_check_path,

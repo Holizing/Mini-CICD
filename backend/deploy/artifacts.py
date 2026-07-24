@@ -383,6 +383,59 @@ def http_health_check(
     return success
 
 
+def wait_for_http_health(
+    ssh_client,
+    port: int,
+    path: Optional[str],
+    timeout_seconds: float = 30,
+    poll_interval_seconds: float = 1,
+) -> bool:
+    """Poll an HTTP endpoint remotely until it is healthy."""
+    if port < 1 or port > 65535:
+        raise DeploymentSafetyError("Health check port is invalid")
+    safe_path = validate_health_check_path(path)
+    retries = max(0, int(timeout_seconds / poll_interval_seconds) - 1)
+    retry_delay = max(1, int(poll_interval_seconds))
+    url = f"http://127.0.0.1:{port}{safe_path}"
+    success, _, _ = ssh_client.execute_command(
+        "curl --fail --silent --show-error "
+        f"--retry {retries} --retry-delay {retry_delay} "
+        "--retry-connrefused "
+        f"--retry-max-time {max(1, int(timeout_seconds))} "
+        "--max-time 5 "
+        f"{shlex.quote(url)}"
+    )
+    return success
+
+
+def wait_for_user_service_health(
+    ssh_client,
+    service_name: str,
+    port: int,
+    path: Optional[str],
+    timeout_seconds: float = 30,
+    poll_interval_seconds: float = 1,
+) -> bool:
+    """Wait for both a user service and its HTTP endpoint to become ready."""
+    service_name = validate_identifier(service_name, "Service name")
+    attempts = max(1, int(timeout_seconds / poll_interval_seconds))
+    retry_delay = max(1, int(poll_interval_seconds))
+    service_success, _, _ = ssh_client.execute_command(
+        f"for attempt in $(seq 1 {attempts}); do "
+        "systemctl --user is-active --quiet "
+        f"{shlex.quote(service_name)}.service && exit 0; "
+        f"sleep {retry_delay}; "
+        "done; exit 1"
+    )
+    return service_success and wait_for_http_health(
+        ssh_client,
+        port,
+        path,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+
+
 def validate_express_artifact(artifact_path: str) -> None:
     package_path = os.path.join(artifact_path, "package.json")
     lock_path = os.path.join(artifact_path, "package-lock.json")
