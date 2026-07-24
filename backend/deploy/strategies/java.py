@@ -2,7 +2,7 @@
 Java deployment strategies.
 """
 from typing import Optional
-from .base import DeploymentStrategy, DeploymentContext
+from .base import DeploymentContext, DeploymentStrategy
 
 
 class SpringBootJarStrategy(DeploymentStrategy):
@@ -19,7 +19,7 @@ class SpringBootJarStrategy(DeploymentStrategy):
     @property
     def supported_runtimes(self) -> list[str]:
         return ["Java"]
-    
+
     def can_handle(self, framework: str, runtime: str) -> bool:
         return framework == "Spring Boot" and runtime == "Java"
     
@@ -140,6 +140,10 @@ class SpringBootWarStrategy(DeploymentStrategy):
     @property
     def supported_runtimes(self) -> list[str]:
         return ["Java"]
+
+    @property
+    def supported_artifact_types(self) -> list[str]:
+        return ["war", "directory"]
     
     def can_handle(self, framework: str, runtime: str) -> bool:
         return framework in ["Spring Boot", "Spring", "Java Servlet/JSP"] and runtime == "Java"

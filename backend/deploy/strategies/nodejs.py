@@ -2,7 +2,7 @@
 Node.js deployment strategies.
 """
 from typing import Optional
-from .base import DeploymentStrategy, DeploymentContext
+from .base import DeploymentContext, DeploymentStrategy
 
 
 class ExpressStrategy(DeploymentStrategy):
@@ -19,7 +19,7 @@ class ExpressStrategy(DeploymentStrategy):
     @property
     def supported_runtimes(self) -> list[str]:
         return ["Node.js"]
-    
+
     def can_handle(self, framework: str, runtime: str) -> bool:
         return framework == "Express" and runtime == "Node.js"
     
@@ -354,7 +354,7 @@ class StaticSiteStrategy(DeploymentStrategy):
     @property
     def supported_runtimes(self) -> list[str]:
         return ["Node.js", "Static"]
-    
+
     def can_handle(self, framework: str, runtime: str) -> bool:
         if framework == "Astro" and runtime == "Static":
             return False

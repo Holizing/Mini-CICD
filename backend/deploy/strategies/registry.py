@@ -1,17 +1,18 @@
-"""
-Deployment strategy registry and factory.
-"""
-from typing import Optional, Dict, Any
-from .base import DeploymentStrategy, DeploymentContext
+"""Deployment strategy registry, capability reporting, and resolution."""
+
+from dataclasses import dataclass
+import os
+import re
+from typing import Any, Dict, Optional
+
+from .base import DeploymentStrategy, StrategyTier
 from .java import (
-    SpringBootJarStrategy,
     SpringBootWarStrategy,
     JakartaEEStrategy,
     QuarkusStrategy,
     MicronautStrategy
 )
 from .nodejs import (
-    ExpressStrategy,
     NestJSStrategy,
     NextJSStrategy,
     StaticSiteStrategy as NodeStaticSiteStrategy,
@@ -19,7 +20,6 @@ from .nodejs import (
 )
 from .python import (
     DjangoStrategy,
-    FastAPIStrategy,
     FlaskStrategy,
     SanicStrategy
 )
@@ -47,6 +47,12 @@ from .static import (
     DocusaurusStrategy,
     MkDocsStrategy
 )
+from .verified import (
+    VerifiedExpressStrategy,
+    VerifiedFastAPIStrategy,
+    VerifiedReactStaticStrategy,
+    VerifiedSpringBootJarStrategy,
+)
 
 
 class DeploymentStrategyRegistry:
@@ -57,15 +63,20 @@ class DeploymentStrategyRegistry:
     methods to select the appropriate strategy based on framework/runtime.
     """
     
-    def __init__(self):
+    def __init__(self, enable_experimental: Optional[bool] = None):
         self._strategies: list[DeploymentStrategy] = []
+        self.enable_experimental = (
+            experimental_strategies_enabled()
+            if enable_experimental is None
+            else enable_experimental
+        )
         self._initialize_strategies()
     
     def _initialize_strategies(self):
         """Initialize all available deployment strategies"""
         # Java strategies
         self._strategies.extend([
-            SpringBootJarStrategy(),
+            VerifiedSpringBootJarStrategy(),
             SpringBootWarStrategy(),
             JakartaEEStrategy(),
             QuarkusStrategy(),
@@ -74,17 +85,18 @@ class DeploymentStrategyRegistry:
         
         # Node.js strategies
         self._strategies.extend([
-            ExpressStrategy(),
+            VerifiedExpressStrategy(),
             NestJSStrategy(),
             NextJSStrategy(),
             NuxtStrategy(),
+            VerifiedReactStaticStrategy(),
             NodeStaticSiteStrategy()
         ])
         
         # Python strategies
         self._strategies.extend([
             DjangoStrategy(),
-            FastAPIStrategy(),
+            VerifiedFastAPIStrategy(),
             FlaskStrategy(),
             SanicStrategy()
         ])
@@ -133,7 +145,12 @@ class DeploymentStrategyRegistry:
             MkDocsStrategy()
         ])
     
-    def get_strategy(self, framework: Optional[str], runtime: Optional[str]) -> Optional[DeploymentStrategy]:
+    def get_strategy(
+        self,
+        framework: Optional[str],
+        runtime: Optional[str],
+        artifact_type: Optional[str] = None,
+    ) -> Optional[DeploymentStrategy]:
         """
         Get the appropriate deployment strategy for the given framework/runtime.
         
@@ -147,12 +164,66 @@ class DeploymentStrategyRegistry:
         if not framework or not runtime:
             return None
         
-        # Try to find a strategy that can handle this framework/runtime
         for strategy in self._strategies:
-            if strategy.can_handle(framework, runtime):
+            if strategy.matches(framework, runtime, artifact_type):
                 return strategy
-        
+
         return None
+
+    def resolve_strategy(
+        self,
+        framework: Optional[str],
+        runtime: Optional[str],
+        artifact_type: Optional[str],
+    ) -> "StrategyResolution":
+        if not framework or not runtime:
+            return StrategyResolution(status="unsupported")
+
+        framework_matches = [
+            strategy
+            for strategy in self._strategies
+            if strategy.can_handle(framework, runtime)
+        ]
+        if not framework_matches:
+            return StrategyResolution(status="unsupported")
+
+        strategy = next(
+            (
+                candidate
+                for candidate in framework_matches
+                if candidate.supports_artifact(artifact_type)
+            ),
+            None,
+        )
+        if strategy is None:
+            return StrategyResolution(
+                status="artifact_mismatch",
+                expected_artifact_types=sorted(
+                    {
+                        artifact
+                        for candidate in framework_matches
+                        for artifact in candidate.supported_artifact_types
+                    }
+                ),
+            )
+
+        tier = strategy.tier_for(framework, runtime, artifact_type)
+        if tier == StrategyTier.EXPERIMENTAL and not self.enable_experimental:
+            return StrategyResolution(
+                status="experimental_disabled",
+                strategy=strategy,
+                tier=tier,
+            )
+
+        return StrategyResolution(
+            status=(
+                "verified"
+                if tier == StrategyTier.VERIFIED
+                else "experimental_enabled"
+            ),
+            strategy=strategy,
+            tier=tier,
+        )
     
     def get_default_deploy_path(self, framework: Optional[str], runtime: Optional[str], project_name: str) -> str:
         """
@@ -189,24 +260,113 @@ class DeploymentStrategyRegistry:
         return project_name.lower()
     
     def list_strategies(self) -> list[Dict[str, Any]]:
-        """
-        List all available strategies with their supported frameworks/runtimes.
-        
-        Returns:
-            List of strategy information
-        """
         return [
             {
                 "name": strategy.name,
                 "frameworks": strategy.supported_frameworks,
-                "runtimes": strategy.supported_runtimes
+                "runtimes": strategy.supported_runtimes,
+                "artifact_types": strategy.supported_artifact_types,
+                "required_tools": strategy.required_tools,
             }
             for strategy in self._strategies
         ]
 
+    def list_capabilities(self) -> list[Dict[str, Any]]:
+        capabilities: list[Dict[str, Any]] = [
+            {
+                "id": "docker",
+                "name": "Docker",
+                "tier": StrategyTier.VERIFIED.value,
+                "status": "verified",
+                "enabled": True,
+                "frameworks": [],
+                "runtimes": ["Docker"],
+                "artifact_types": ["docker_image"],
+                "required_tools": ["docker"],
+                "default_health_check_port": None,
+            }
+        ]
+
+        for strategy in self._strategies:
+            profiles_by_tier: dict[
+                StrategyTier,
+                list[tuple[str, str]],
+            ] = {}
+            for framework in strategy.supported_frameworks:
+                for runtime in strategy.supported_runtimes:
+                    if not strategy.can_handle(framework, runtime):
+                        continue
+                    tier = strategy.tier_for(framework, runtime, None)
+                    profiles_by_tier.setdefault(tier, []).append(
+                        (framework, runtime)
+                    )
+
+            for tier, profiles in profiles_by_tier.items():
+                enabled = (
+                    tier == StrategyTier.VERIFIED
+                    or self.enable_experimental
+                )
+                suffix = (
+                    ""
+                    if len(profiles_by_tier) == 1
+                    else f"-{tier.value}"
+                )
+                capabilities.append(
+                    {
+                        "id": f"{_capability_id(strategy.name)}{suffix}",
+                        "name": strategy.name,
+                        "tier": tier.value,
+                        "status": (
+                            tier.value
+                            if tier == StrategyTier.VERIFIED
+                            else (
+                                "experimental_enabled"
+                                if enabled
+                                else "experimental_disabled"
+                            )
+                        ),
+                        "enabled": enabled,
+                        "frameworks": sorted(
+                            {framework for framework, _ in profiles}
+                        ),
+                        "runtimes": sorted(
+                            {runtime for _, runtime in profiles}
+                        ),
+                        "artifact_types": (
+                            strategy.supported_artifact_types
+                        ),
+                        "required_tools": strategy.required_tools,
+                        "default_health_check_port": (
+                            strategy.default_health_check_port
+                        ),
+                    }
+                )
+
+        return capabilities
+
+
+@dataclass(frozen=True)
+class StrategyResolution:
+    status: str
+    strategy: Optional[DeploymentStrategy] = None
+    tier: Optional[StrategyTier] = None
+    expected_artifact_types: Optional[list[str]] = None
+
+
+def experimental_strategies_enabled() -> bool:
+    return os.getenv(
+        "MINI_CICD_ENABLE_EXPERIMENTAL_STRATEGIES",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _capability_id(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
 
 # Global registry instance
 _registry = None
+_registry_experimental_setting = None
 
 
 def get_registry() -> DeploymentStrategyRegistry:
@@ -216,13 +376,19 @@ def get_registry() -> DeploymentStrategyRegistry:
     Returns:
         DeploymentStrategyRegistry instance
     """
-    global _registry
-    if _registry is None:
-        _registry = DeploymentStrategyRegistry()
+    global _registry, _registry_experimental_setting
+    enabled = experimental_strategies_enabled()
+    if _registry is None or _registry_experimental_setting != enabled:
+        _registry = DeploymentStrategyRegistry(enable_experimental=enabled)
+        _registry_experimental_setting = enabled
     return _registry
 
 
-def get_strategy(framework: Optional[str], runtime: Optional[str]) -> Optional[DeploymentStrategy]:
+def get_strategy(
+    framework: Optional[str],
+    runtime: Optional[str],
+    artifact_type: Optional[str] = None,
+) -> Optional[DeploymentStrategy]:
     """
     Get the appropriate deployment strategy for the given framework/runtime.
     
@@ -233,4 +399,4 @@ def get_strategy(framework: Optional[str], runtime: Optional[str]) -> Optional[D
     Returns:
         DeploymentStrategy if found, None otherwise
     """
-    return get_registry().get_strategy(framework, runtime)
+    return get_registry().get_strategy(framework, runtime, artifact_type)

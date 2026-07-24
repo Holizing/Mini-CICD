@@ -23,6 +23,8 @@ class DeployStartRequest(BaseModel):
     deploy_script: Optional[str] = None
     container_name: Optional[str] = Field(default=None, max_length=255)
     port_mapping: Optional[str] = Field(default=None, max_length=100)
+    health_check_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    health_check_path: Optional[str] = Field(default="/", max_length=2048)
 
     @field_validator(
         "server_ip",
@@ -34,6 +36,7 @@ class DeployStartRequest(BaseModel):
         "deploy_script",
         "container_name",
         "port_mapping",
+        "health_check_path",
     )
     @classmethod
     def normalize_text(cls, value: Optional[str]) -> Optional[str]:
@@ -48,6 +51,14 @@ class DeployStartRequest(BaseModel):
         if value is not None and not value.startswith("/"):
             raise ValueError("deploy_path must be an absolute Linux path")
         return value
+
+    @field_validator("health_check_path")
+    @classmethod
+    def validate_health_check_path(cls, value: Optional[str]) -> str:
+        path = value or "/"
+        if not path.startswith("/"):
+            raise ValueError("health_check_path must start with /")
+        return path
 
     @model_validator(mode="after")
     def validate_authentication(self):
@@ -73,6 +84,8 @@ class DeployExecutionInput(BaseModel):
     port_mapping: Optional[str] = None
     docker_image: Optional[str] = None
     docker_compose_file: Optional[str] = None
+    health_check_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    health_check_path: str = "/"
     workspace_dir: str
     logs_dir: str
     timeout_seconds: int = Field(ge=1)
@@ -128,3 +141,20 @@ class DeployStageResponse(BaseModel):
 class DeployHistoryResponse(BaseModel):
     deploys: list[DeployResponse]
     total: int
+
+
+class DeploymentCapabilityResponse(BaseModel):
+    id: str
+    name: str
+    tier: Literal["verified", "experimental"]
+    status: Literal[
+        "verified",
+        "experimental_enabled",
+        "experimental_disabled",
+    ]
+    enabled: bool
+    frameworks: list[str]
+    runtimes: list[str]
+    artifact_types: list[str]
+    required_tools: list[str]
+    default_health_check_port: Optional[int] = None

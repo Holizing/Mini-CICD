@@ -16,6 +16,7 @@ from backend.build.schemas import (
 )
 from backend.build.utils import get_log_path
 from backend.common.database import SessionLocal
+from backend.deploy.artifacts import validate_project_name
 from backend.project.models import Project
 
 
@@ -75,6 +76,7 @@ class BuildService:
                 status_code=409,
                 detail="Inactive projects cannot start new builds",
             )
+        validate_project_name(project.name)
         if request.build_type == "docker" and not self.docker_enabled:
             raise HTTPException(
                 status_code=409,
@@ -219,6 +221,22 @@ class BuildService:
 
             if not success:
                 build.error_message = error_message or "Build failed"
+                pending_stages = (
+                    self.db.query(BuildStage)
+                    .filter(
+                        BuildStage.build_id == build_id,
+                        BuildStage.status == "pending",
+                    )
+                    .all()
+                )
+                for stage in pending_stages:
+                    stage.status = "failed"
+                    stage.finished_at = end_time
+                    stage.duration = 0
+                    stage.error_message = (
+                        error_message
+                        or "Build stopped before this stage"
+                    )
             else:
                 build.error_message = None
 
@@ -248,15 +266,15 @@ class BuildService:
         build.duration = duration
         build.error_message = error_message
 
-        running_stages = (
+        incomplete_stages = (
             self.db.query(BuildStage)
             .filter(
                 BuildStage.build_id == build_id,
-                BuildStage.status == "running",
+                BuildStage.status.in_(["pending", "running"]),
             )
             .all()
         )
-        for stage in running_stages:
+        for stage in incomplete_stages:
             stage.status = "failed"
             stage.finished_at = end_time
             stage.error_message = error_message
@@ -264,6 +282,8 @@ class BuildService:
                 stage.duration = int(
                     (end_time - stage.started_at).total_seconds()
                 )
+            else:
+                stage.duration = 0
 
         self.db.commit()
 

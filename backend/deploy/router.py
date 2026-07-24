@@ -2,8 +2,15 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from backend.common.database import get_db
 from backend.common.runtime import get_execution_settings
-from backend.deploy.schemas import DeployStartRequest, DeployResponse, DeployHistoryResponse, DeployStageResponse
+from backend.deploy.schemas import (
+    DeployHistoryResponse,
+    DeploymentCapabilityResponse,
+    DeployResponse,
+    DeployStageResponse,
+    DeployStartRequest,
+)
 from backend.deploy.service import DeployService
+from backend.deploy.strategies import get_registry
 
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
@@ -58,6 +65,15 @@ async def start_deploy(
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start deploy: {str(e)}")
+
+
+@router.get(
+    "/capabilities",
+    response_model=list[DeploymentCapabilityResponse],
+)
+async def get_deployment_capabilities():
+    """Return the deploy profiles enabled by the current server."""
+    return get_registry().list_capabilities()
 
 
 @router.get("/status/{deploy_id}", response_model=DeployResponse)
