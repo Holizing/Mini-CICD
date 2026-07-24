@@ -113,18 +113,18 @@ class BlazorServerStrategy(DeploymentStrategy):
     
     @property
     def name(self) -> str:
-        return "Blazor Server"
+        return "Blazor"
     
     @property
     def supported_frameworks(self) -> list[str]:
-        return ["Blazor Server"]
+        return ["Blazor", "Blazor Server"]
     
     @property
     def supported_runtimes(self) -> list[str]:
         return [".NET"]
     
     def can_handle(self, framework: str, runtime: str) -> bool:
-        return framework == "Blazor Server" and runtime == ".NET"
+        return framework in self.supported_frameworks and runtime == ".NET"
     
     def execute(self, context: DeploymentContext, log_func) -> bool:
         try:

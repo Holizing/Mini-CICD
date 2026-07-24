@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from backend.common.database import get_db
 from backend.deploy.schemas import DeployStartRequest, DeployResponse, DeployHistoryResponse, DeployStageResponse
@@ -28,6 +28,7 @@ def get_deploy_service(
 @router.post("/start", response_model=DeployResponse)
 async def start_deploy(
     request: DeployStartRequest,
+    background_tasks: BackgroundTasks,
     deploy_service: DeployService = Depends(get_deploy_service)
 ):
     """
@@ -41,7 +42,7 @@ async def start_deploy(
         Deploy response with deploy details
     """
     try:
-        deploy = deploy_service.start_deploy(request)
+        deploy = deploy_service.start_deploy(request, background_tasks)
         return deploy
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

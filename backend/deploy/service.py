@@ -1,14 +1,48 @@
 import os
-import time
-import threading
 import subprocess
+import time
+import traceback
 from datetime import datetime
 from typing import Optional
+
+from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
-from backend.deploy.models import Deploy
+
+from backend.common.database import SessionLocal
+from backend.deploy.models import Deploy, DeployStage
 from backend.deploy.schemas import DeployStartRequest, DeployResponse
 from backend.deploy.ssh import SSHClient
 from backend.deploy.utils import get_log_path
+
+
+def run_deploy_worker(
+    deploy_id: int,
+    request_data: dict,
+    logs_dir: str,
+    workspace_dir: str,
+) -> None:
+    """Run a deploy using a database session owned by the worker."""
+    worker_started_at = time.time()
+
+    try:
+        request = DeployStartRequest.model_validate(request_data)
+        with SessionLocal() as db:
+            service = DeployService(db, logs_dir, workspace_dir)
+            try:
+                service._execute_deploy_sync(deploy_id, request)
+            except Exception:
+                db.rollback()
+                raise
+    except Exception as error:
+        worker_traceback = traceback.format_exc()
+        with SessionLocal() as db:
+            service = DeployService(db, logs_dir, workspace_dir)
+            service._mark_deploy_failed(
+                deploy_id=deploy_id,
+                error=error,
+                worker_started_at=worker_started_at,
+                worker_traceback=worker_traceback,
+            )
 
 
 class DeployService:
@@ -38,8 +72,6 @@ class DeployService:
 
     def _create_stage(self, deploy_id: int, stage_name: str) -> int:
         """Create a new deploy stage in database and return its ID."""
-        from backend.deploy.models import DeployStage
-
         stage_log_dir = self._create_stage_log_dir(deploy_id)
         stage_log_file = os.path.join(stage_log_dir, f"{stage_name.lower().replace(' ', '_')}.log")
 
@@ -64,8 +96,6 @@ class DeployService:
         if stage_name not in self.stages:
             return
 
-        from backend.deploy.models import DeployStage
-
         stage = self.db.query(DeployStage).filter(DeployStage.id == self.stages[stage_name]).first()
         if stage:
             stage.status = "running"
@@ -77,8 +107,6 @@ class DeployService:
         if stage_name not in self.stages:
             return
 
-        from backend.deploy.models import DeployStage
-
         stage = self.db.query(DeployStage).filter(DeployStage.id == self.stages[stage_name]).first()
         if stage:
             stage.status = status
@@ -88,6 +116,22 @@ class DeployService:
             if error_message:
                 stage.error_message = error_message
             self.db.commit()
+
+    def _load_stages(self, deploy_id: int) -> None:
+        """Load stage IDs and log paths into this worker-owned service."""
+        stages = (
+            self.db.query(DeployStage)
+            .filter(DeployStage.deploy_id == deploy_id)
+            .order_by(DeployStage.id)
+            .all()
+        )
+        self.current_deploy_id = deploy_id
+        self.stages = {stage.stage_name: stage.id for stage in stages}
+        self.stage_logs = {
+            stage.stage_name: stage.log_file
+            for stage in stages
+            if stage.log_file
+        }
 
     def _initialize_stages(self, deploy_id: int, deploy_type: str, docker_mode: str = None) -> None:
         """Initialize all stages for a deploy."""
@@ -111,7 +155,11 @@ class DeployService:
 
         self._create_stage(deploy_id, "Finalize Deploy")
 
-    def start_deploy(self, request: DeployStartRequest) -> DeployResponse:
+    def start_deploy(
+        self,
+        request: DeployStartRequest,
+        background_tasks: BackgroundTasks,
+    ) -> DeployResponse:
         """
         Start a new deploy process.
         
@@ -202,67 +250,53 @@ class DeployService:
             self._log(deploy.log_path, f"Deploy Path: {request.deploy_path}")
             self._log(deploy.log_path, f"Service: {request.service_name}")
 
-        # Execute deploy in background thread
-        def run_deploy_with_error_handling():
-            try:
-                self._execute_deploy_sync(deploy, request)
-            except Exception as e:
-                # Log any uncaught exceptions
-                self._log(deploy.log_path, f"CRITICAL ERROR: {str(e)}")
-                import traceback
-                self._log(deploy.log_path, f"Traceback: {traceback.format_exc()}")
-                
-                # Update deploy record as failed
-                db_error = SessionLocal()
-                try:
-                    deploy_error = db_error.query(Deploy).filter(Deploy.id == deploy.id).first()
-                    if deploy_error:
-                        deploy_error.status = "failed"
-                        deploy_error.error_message = f"Critical error: {str(e)}"
-                        db_error.commit()
-                finally:
-                    db_error.close()
-        
-        thread = threading.Thread(target=run_deploy_with_error_handling)
-        thread.daemon = True
-        thread.start()
+        response = self._deploy_to_response(deploy)
+        background_tasks.add_task(
+            run_deploy_worker,
+            deploy.id,
+            request.model_dump(),
+            self.logs_dir,
+            self.workspace_dir,
+        )
+        return response
 
-        # Return immediately with deploy_id
-        return self._deploy_to_response(deploy)
-
-    def _execute_deploy_sync(self, deploy: Deploy, request: DeployStartRequest) -> None:
+    def _execute_deploy_sync(
+        self,
+        deploy_id: int,
+        request: DeployStartRequest,
+    ) -> None:
         """
-        Execute deploy synchronously.
+        Execute deploy synchronously with this worker's database session.
 
         Args:
-            deploy: Deploy model instance
+            deploy_id: Deploy record ID
             request: Deploy start request
         """
+        from backend.build.models import Build
+
+        deploy = self.db.query(Deploy).filter(Deploy.id == deploy_id).first()
+        if not deploy:
+            raise ValueError(f"Deploy {deploy_id} not found")
+
+        build = self.db.query(Build).filter(Build.id == request.build_id).first()
+        if not build:
+            raise ValueError(f"Build {request.build_id} not found")
+
+        self._load_stages(deploy_id)
         start_time = time.time()
         log_file = deploy.log_path
-
-        self._log(log_file, f"[DEBUG] _execute_deploy_sync started for deploy #{deploy.id}")
-        self._log(log_file, f"[DEBUG] Request details: deploy_type={request.deploy_type}, server={request.server_ip}")
+        ssh = None
 
         try:
+            self._log(log_file, f"[DEBUG] _execute_deploy_sync started for deploy #{deploy.id}")
+            self._log(log_file, f"[DEBUG] Request details: deploy_type={request.deploy_type}, server={request.server_ip}")
+
             # Validate Build stage
             self._start_stage("Validate Build")
             self._log_stage("Validate Build", f"Validating build #{request.build_id}...")
             self._log(log_file, f"Step 1: Getting build record...")
-            # Get build record to get artifact path - create new session for background thread
-            from backend.build.models import Build
-            from backend.common.database import SessionLocal
-            db_thread = SessionLocal()
-            try:
-                build = db_thread.query(Build).filter(Build.id == request.build_id).first()
-                if build:
-                    self._log(log_file, f"Build record found: artifact_path={build.artifact_path}, artifact_type={build.artifact_type}")
-                    self._log_stage("Validate Build", f"Build validated: artifact_path={build.artifact_path}, artifact_type={build.artifact_type}")
-                else:
-                    self._log(log_file, f"Warning: Build record not found")
-                    self._log_stage("Validate Build", "Warning: Build record not found")
-            finally:
-                db_thread.close()
+            self._log(log_file, f"Build record found: artifact_path={build.artifact_path}, artifact_type={build.artifact_type}")
+            self._log_stage("Validate Build", f"Build validated: artifact_path={build.artifact_path}, artifact_type={build.artifact_type}")
             self._complete_stage("Validate Build", "success")
 
             # Connect to Server stage
@@ -299,52 +333,80 @@ class DeployService:
             else:
                 self._execute_source_deploy(ssh, deploy, request, build, log_file)
 
-            self._log(log_file, f"Step 7: Closing SSH connection...")
-            # Close SSH connection
-            ssh.close()
-            self._log(log_file, f"Step 7: SSH connection closed")
-
             # Finalize Deploy stage
             self._start_stage("Finalize Deploy")
             self._log_stage("Finalize Deploy", "Updating deploy record...")
             self._log(log_file, f"Step 8: Updating deploy record...")
-            # Update deploy record as success - use new session for background thread
             end_time = datetime.utcnow()
             duration = int(time.time() - start_time)
 
-            db_update = SessionLocal()
-            try:
-                deploy_update = db_update.query(Deploy).filter(Deploy.id == deploy.id).first()
-                if deploy_update:
-                    deploy_update.status = "success"
-                    deploy_update.end_time = end_time
-                    deploy_update.duration = duration
-                    db_update.commit()
-                    self._log(log_file, f"Step 8: Deploy record updated successfully")
-                    self._log(log_file, f"=== Deploy #{deploy.id} Completed Successfully in {duration}s ===")
-                    self._log_stage("Finalize Deploy", f"Deploy completed successfully in {duration}s")
-            finally:
-                db_update.close()
+            deploy.status = "success"
+            deploy.end_time = end_time
+            deploy.duration = duration
+            deploy.error_message = None
+            self.db.commit()
+            self._log(log_file, f"Step 8: Deploy record updated successfully")
+            self._log(log_file, f"=== Deploy #{deploy.id} Completed Successfully in {duration}s ===")
+            self._log_stage("Finalize Deploy", f"Deploy completed successfully in {duration}s")
             self._complete_stage("Finalize Deploy", "success")
+        except Exception:
+            self.db.rollback()
+            raise
+        finally:
+            if ssh is not None:
+                try:
+                    self._log(log_file, f"Step 7: Closing SSH connection...")
+                    ssh.close()
+                    self._log(log_file, f"Step 7: SSH connection closed")
+                except Exception as close_error:
+                    self._log(log_file, f"Failed to close SSH connection cleanly: {close_error}")
 
-        except Exception as e:
-            # Handle errors - use new session for background thread
-            end_time = datetime.utcnow()
-            duration = int(time.time() - start_time)
+    def _mark_deploy_failed(
+        self,
+        deploy_id: int,
+        error: Exception,
+        worker_started_at: float,
+        worker_traceback: str,
+    ) -> None:
+        """Persist a terminal deploy failure in a recovery session."""
+        self.db.rollback()
+        deploy = self.db.query(Deploy).filter(Deploy.id == deploy_id).first()
+        if not deploy:
+            return
 
-            db_update = SessionLocal()
+        end_time = datetime.utcnow()
+        duration = int(time.time() - worker_started_at)
+        error_message = str(error)
+
+        deploy.status = "failed"
+        deploy.end_time = end_time
+        deploy.duration = duration
+        deploy.error_message = error_message
+
+        running_stages = (
+            self.db.query(DeployStage)
+            .filter(
+                DeployStage.deploy_id == deploy_id,
+                DeployStage.status == "running",
+            )
+            .all()
+        )
+        for stage in running_stages:
+            stage.status = "failed"
+            stage.finished_at = end_time
+            stage.error_message = error_message
+            if stage.started_at:
+                stage.duration = int((end_time - stage.started_at).total_seconds())
+
+        self.db.commit()
+
+        if deploy.log_path:
             try:
-                deploy_update = db_update.query(Deploy).filter(Deploy.id == deploy.id).first()
-                if deploy_update:
-                    deploy_update.status = "failed"
-                    deploy_update.end_time = end_time
-                    deploy_update.duration = duration
-                    deploy_update.error_message = str(e)
-                    db_update.commit()
-                    self._log(log_file, f"=== Deploy #{deploy.id} Failed after {duration}s ===")
-                    self._log(log_file, f"Error: {str(e)}")
-            finally:
-                db_update.close()
+                self._log(deploy.log_path, f"=== Deploy #{deploy.id} Failed after {duration}s ===")
+                self._log(deploy.log_path, f"Error: {error_message}")
+                self._log(deploy.log_path, f"Traceback:\n{worker_traceback}")
+            except OSError:
+                pass
 
     def _execute_source_deploy(
         self,
