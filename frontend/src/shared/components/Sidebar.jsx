@@ -1,18 +1,17 @@
-import React from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
 
-const Sidebar = () => {
-  const location = useLocation()
+const MENU_ITEMS = [
+  { path: '/', label: 'Dashboard' },
+  { path: '/projects', label: 'Projects' },
+  { path: '/build', label: 'Build' },
+  { path: '/deploy', label: 'Deploy' },
+  { path: '/history', label: 'History' },
+  { path: '/settings', label: 'Settings' },
+]
 
-  const menuItems = [
-    { path: '/', label: 'Dashboard', icon: '📊' },
-    { path: '/projects', label: 'Projects', icon: '📁' },
-    { path: '/build', label: 'Build', icon: '🔨' },
-    { path: '/deploy', label: 'Deploy', icon: '🚀' },
-    { path: '/history', label: 'History', icon: '📜' },
-    { path: '/settings', label: 'Settings', icon: '⚙️' },
-  ]
+function Sidebar() {
+  const location = useLocation()
 
   const isActive = (path) => {
     if (path === '/') {
@@ -22,54 +21,39 @@ const Sidebar = () => {
   }
 
   return (
-    <aside style={{
-      width: '240px',
-      backgroundColor: '#111827',
-      color: 'white',
-      padding: '24px 0',
-      display: 'flex',
-      flexDirection: 'column',
-      minHeight: 'calc(100vh - 64px)'
-    }}>
-      <nav style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '4px'
-      }}>
-        {menuItems.map((item) => (
-          <Link
-            key={item.path}
-            to={item.path}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-              padding: '12px 24px',
-              color: isActive(item.path) ? '#60a5fa' : '#9ca3af',
-              textDecoration: 'none',
-              fontSize: '14px',
-              fontWeight: '500',
-              transition: 'all 0.2s',
-              borderLeft: isActive(item.path) ? '3px solid #60a5fa' : '3px solid transparent',
-              backgroundColor: isActive(item.path) ? 'rgba(59, 130, 246, 0.1)' : 'transparent'
-            }}
-            onMouseEnter={(event) => {
-              if (!isActive(item.path)) {
-                event.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'
-                event.currentTarget.style.color = 'white'
-              }
-            }}
-            onMouseLeave={(event) => {
-              if (!isActive(item.path)) {
-                event.currentTarget.style.backgroundColor = 'transparent'
-                event.currentTarget.style.color = '#9ca3af'
-              }
-            }}
-          >
-            <span style={{ fontSize: '18px' }}>{item.icon}</span>
-            {item.label}
-          </Link>
-        ))}
+    <aside
+      className="app-sidebar"
+      style={{
+        width: '240px',
+        minHeight: 'calc(100vh - 64px)',
+        padding: '24px 0',
+        color: '#ffffff',
+        backgroundColor: '#111827',
+      }}
+    >
+      <nav className="app-sidebar__nav" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        {MENU_ITEMS.map((item) => {
+          const active = isActive(item.path)
+          return (
+            <Link
+              className="app-sidebar__link"
+              key={item.path}
+              to={item.path}
+              style={{
+                padding: '12px 24px',
+                color: active ? '#60a5fa' : '#d1d5db',
+                textDecoration: 'none',
+                fontSize: '14px',
+                fontWeight: 700,
+                borderLeft: active ? '3px solid #60a5fa' : '3px solid transparent',
+                borderBottomColor: active ? '#60a5fa' : 'transparent',
+                backgroundColor: active ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
+              }}
+            >
+              {item.label}
+            </Link>
+          )
+        })}
       </nav>
     </aside>
   )

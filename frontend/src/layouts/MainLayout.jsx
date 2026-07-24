@@ -1,29 +1,16 @@
-import React from 'react'
 import { Outlet } from 'react-router-dom'
 
 import Navbar from '../shared/components/Navbar'
 import Sidebar from '../shared/components/Sidebar'
 
 
-const MainLayout = () => {
+function MainLayout() {
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      minHeight: '100vh',
-      backgroundColor: '#f3f4f6'
-    }}>
+    <div style={{ minHeight: '100vh', backgroundColor: '#f3f4f6' }}>
       <Navbar />
-      <div style={{
-        display: 'flex',
-        flex: 1
-      }}>
+      <div className="app-shell" style={{ display: 'flex', alignItems: 'stretch' }}>
         <Sidebar />
-        <main style={{
-          flex: 1,
-          padding: '24px',
-          overflow: 'auto'
-        }}>
+        <main className="app-shell__content" style={{ flex: 1, minWidth: 0, padding: '28px' }}>
           <Outlet />
         </main>
       </div>

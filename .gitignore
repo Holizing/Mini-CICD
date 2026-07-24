@@ -19,40 +19,35 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual environments
 venv/
 env/
 ENV/
-.venv
+.venv/
 
-# IDE
+# IDE and OS
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Database
+# Local data
 *.db
 *.sqlite
 *.sqlite3
-
-# Logs
 logs/
 *.log
-
-# Workspace
 workspace/
+.mini-cicd-jwt-secret
 
-# Environment Variables
+# Environment variables
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Node / Frontend
 node_modules/
@@ -61,27 +56,16 @@ dist/
 .cache/
 .next/
 out/
+.vite/
 
-# Testing
+# Test and tooling caches
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
-
-# Type checking
 .mypy_cache/
 .dmypy.json
 dmypy.json
 .pyre/
-
-# Tooling
 .ipynb_checkpoints
-celerybeat-schedule
-celerybeat.pid
-*.sage.py
-.spyderproject
-.spyproject
-.ropeproject
-/site
 .fastapi-data/
-.vite/
