@@ -206,7 +206,23 @@ class DeployService:
         request: DeployStartRequest,
         background_tasks: BackgroundTasks,
     ) -> DeployResponse:
-        """Create a deploy from canonical Build data and schedule its worker."""
+        """Create a manual deploy and schedule its worker."""
+        response, execution = self.prepare_deploy(request)
+        background_tasks.add_task(
+            run_deploy_worker,
+            response.id,
+            execution.model_dump(),
+        )
+        return response
+
+    def prepare_deploy(
+        self,
+        request: DeployStartRequest,
+        *,
+        server_port: int = 22,
+        known_hosts_path: Optional[str] = None,
+    ) -> tuple[DeployResponse, DeployExecutionInput]:
+        """Persist a deploy and return immutable data for its worker."""
         from backend.build.models import Build
 
         build = self.db.get(Build, request.build_id)
@@ -409,9 +425,11 @@ class DeployService:
         execution = DeployExecutionInput(
             build_id=build.id,
             server_ip=request.server_ip,
+            server_port=server_port,
             server_user=request.server_user,
             server_password=request.server_password,
             server_ssh_key=request.server_ssh_key,
+            known_hosts_path=known_hosts_path,
             deploy_path=deploy_path,
             service_name=service_name,
             deploy_type=deploy_type,
@@ -431,12 +449,7 @@ class DeployService:
         )
 
         response = self._deploy_to_response(deploy)
-        background_tasks.add_task(
-            run_deploy_worker,
-            deploy.id,
-            execution.model_dump(),
-        )
-        return response
+        return response, execution
 
     def _execute_deploy_sync(
         self,
@@ -482,11 +495,13 @@ class DeployService:
             self._log(log_file, f"Step 2: Using SSH key: {'Yes' if request.server_ssh_key else 'No'}")
             ssh = SSHClient(
                 host=request.server_ip,
+                port=request.server_port,
                 username=request.server_user,
                 password=request.server_password,
                 key=request.server_ssh_key,
                 timeout_seconds=self.timeout_seconds,
                 deadline=self.deadline,
+                known_hosts_path=request.known_hosts_path,
             )
 
             self._log(log_file, f"Step 3: Connecting to SSH server {request.server_user}@{request.server_ip}...")

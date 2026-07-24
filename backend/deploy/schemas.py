@@ -70,9 +70,11 @@ class DeployStartRequest(BaseModel):
 class DeployExecutionInput(BaseModel):
     build_id: int
     server_ip: str
+    server_port: int = Field(default=22, ge=1, le=65535)
     server_user: str
     server_password: Optional[str] = None
     server_ssh_key: Optional[str] = None
+    known_hosts_path: Optional[str] = None
     deploy_path: Optional[str] = None
     service_name: Optional[str] = None
     deploy_type: Literal["source", "docker"]

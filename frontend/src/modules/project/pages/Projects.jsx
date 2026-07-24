@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
+import AutomationForm from '../components/AutomationForm'
 import ProjectForm from '../components/ProjectForm'
 import ProjectTable from '../components/ProjectTable'
 import { projectService } from '../services/projectService'
@@ -15,6 +16,7 @@ const formatApiError = (err, fallback) => {
 const Projects = () => {
   const [projects, setProjects] = useState([])
   const [selectedProject, setSelectedProject] = useState(null)
+  const [automationProject, setAutomationProject] = useState(null)
   const [projectToDelete, setProjectToDelete] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -93,6 +95,9 @@ const Projects = () => {
 
       if (selectedProject?.id === projectToDelete.id) {
         setSelectedProject(null)
+      }
+      if (automationProject?.id === projectToDelete.id) {
+        setAutomationProject(null)
       }
 
       setProjectToDelete(null)
@@ -177,6 +182,13 @@ const Projects = () => {
         }}>
           {message}
         </div>
+      )}
+
+      {automationProject && (
+        <AutomationForm
+          project={automationProject}
+          onClose={() => setAutomationProject(null)}
+        />
       )}
 
       {projectToDelete && (
@@ -313,8 +325,14 @@ const Projects = () => {
         ) : (
           <ProjectTable
             projects={filteredProjects}
+            onAutomation={(project) => {
+              setAutomationProject(project)
+              setSelectedProject(null)
+              setProjectToDelete(null)
+            }}
             onEdit={(project) => {
               setSelectedProject(project)
+              setAutomationProject(null)
               setProjectToDelete(null)
             }}
             onDelete={setProjectToDelete}

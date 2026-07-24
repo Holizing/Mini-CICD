@@ -107,4 +107,8 @@ code {
   .health-check-grid {
     grid-template-columns: minmax(0, 1fr) !important;
   }
+
+  .automation-config-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
 }

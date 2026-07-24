@@ -33,6 +33,10 @@ class BuildStartRequest(BaseModel):
 
 class BuildExecutionInput(BaseModel):
     repo_url: str
+    commit_sha: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{40}$",
+    )
     workspace_dir: str
     logs_dir: str
     timeout_seconds: int = Field(ge=1)

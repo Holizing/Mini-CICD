@@ -3,6 +3,10 @@
 Mini-CICD is a small Linux-focused platform for managing repositories and
 running Build -> Deploy workflows from a web interface.
 
+GitHub push webhooks can start the same Project -> Build -> Deploy pipeline.
+Each Project has an explicit automation profile, and deployment credentials
+come from one global Linux target configuration.
+
 ## Verified deployment profiles
 
 - Docker image build/deploy.
@@ -43,5 +47,9 @@ runbook is in `ops/linux/README.md`.
 - Experimental strategies are off unless
   `MINI_CICD_ENABLE_EXPERIMENTAL_STRATEGIES=true`.
 - SSH requires a trusted `known_hosts` file; unknown host keys are rejected.
+- GitHub webhooks require `X-Hub-Signature-256` HMAC verification and use
+  `X-GitHub-Delivery` as an idempotency key.
+- Deployment target settings store only SSH key and `known_hosts` paths, never
+  passwords or private key contents.
 - Database files, runtime data, JWT secrets, SSH keys, logs and environment
   files must not be committed.

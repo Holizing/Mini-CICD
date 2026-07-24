@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 
 import MainLayout from '../layouts/MainLayout'
 import ProtectedRoute from '../modules/auth/components/ProtectedRoute'
+import Automation from '../modules/automation/pages/Automation'
 import Login from '../modules/auth/pages/Login'
 import Build from '../modules/build/pages/Build'
 import Deploy from '../modules/deploy/pages/Deploy'
@@ -22,6 +23,7 @@ function AppRouter() {
           <Route path="build" element={<Build />} />
           <Route path="deploy" element={<Deploy />} />
           <Route path="history" element={<History />} />
+          <Route path="automation" element={<Automation />} />
           <Route path="settings" element={<Settings />} />
         </Route>
       </Route>

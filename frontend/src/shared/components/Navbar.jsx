@@ -8,6 +8,7 @@ const PAGE_TITLES = [
   { prefix: '/build', title: 'Build' },
   { prefix: '/deploy', title: 'Deploy' },
   { prefix: '/history', title: 'History' },
+  { prefix: '/automation', title: 'Automation' },
   { prefix: '/settings', title: 'Settings' },
 ]
 

@@ -24,4 +24,14 @@ export const projectService = {
   deleteProject: async (projectId) => {
     await api.delete(`/projects/${projectId}`)
   },
+
+  getAutomation: async (projectId) => {
+    const response = await api.get(`/projects/${projectId}/automation`)
+    return response.data
+  },
+
+  updateAutomation: async (projectId, data) => {
+    const response = await api.put(`/projects/${projectId}/automation`, data)
+    return response.data
+  },
 }

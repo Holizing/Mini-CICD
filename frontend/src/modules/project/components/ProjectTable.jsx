@@ -1,4 +1,10 @@
-const ProjectTable = ({ projects, onEdit, onDelete, deletingId }) => {
+const ProjectTable = ({
+  projects,
+  onAutomation,
+  onEdit,
+  onDelete,
+  deletingId,
+}) => {
   if (!projects || projects.length === 0) {
     return (
       <div style={{
@@ -84,6 +90,20 @@ const ProjectTable = ({ projects, onEdit, onDelete, deletingId }) => {
               </td>
               <td style={{ padding: '12px 16px' }}>
                 <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => onAutomation(project)}
+                    style={{
+                      padding: '7px 10px',
+                      backgroundColor: '#f0fdf4',
+                      color: '#166534',
+                      border: '1px solid #bbf7d0',
+                      borderRadius: '6px',
+                      fontWeight: '600',
+                    }}
+                  >
+                    Automation
+                  </button>
                   <button
                     type="button"
                     onClick={() => onEdit(project)}
