@@ -356,7 +356,9 @@ class StaticSiteStrategy(DeploymentStrategy):
         return ["Node.js", "Static"]
     
     def can_handle(self, framework: str, runtime: str) -> bool:
-        return framework in ["React", "Vue", "Angular", "SvelteKit", "Astro", "Remix", "Static"]
+        if framework == "Astro" and runtime == "Static":
+            return False
+        return framework in self.supported_frameworks and runtime in self.supported_runtimes
     
     def execute(self, context: DeploymentContext, log_func) -> bool:
         try:
@@ -488,7 +490,7 @@ class NuxtStrategy(DeploymentStrategy):
     
     @property
     def name(self) -> str:
-        return "Nuxt.js"
+        return "Nuxt"
     
     @property
     def supported_frameworks(self) -> list[str]:
