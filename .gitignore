@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-# build/ is now used for frontend modules, ignore only Python build artifacts
 develop-eggs/
 dist/
 downloads/
@@ -63,55 +62,26 @@ dist/
 .next/
 out/
 
-# Build artifacts
-*.pyc
-*.pyo
-
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 
-# MyPy
+# Type checking
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Celery
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath
-*.sage.py
-
-# Environments
-.env
-.venv
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
 .pyre/
 
-# FastAPI
+# Tooling
+.ipynb_checkpoints
+celerybeat-schedule
+celerybeat.pid
+*.sage.py
+.spyderproject
+.spyproject
+.ropeproject
+/site
 .fastapi-data/
-
-# Vite
 .vite/

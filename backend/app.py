@@ -1,15 +1,17 @@
-import sys
 import os
+import sys
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI
-from backend.common.database import engine, Base
-from backend.build import router as build_router
-from backend.deploy import router as deploy_router
-
 from fastapi.middleware.cors import CORSMiddleware
 
-# Create database tables
+from backend.build import router as build_router
+from backend.common.database import Base, engine
+from backend.deploy import router as deploy_router
+from backend.project import router as project_router
+
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Mini CI/CD API")
@@ -22,7 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+app.include_router(project_router)
 app.include_router(build_router)
 app.include_router(deploy_router)
 

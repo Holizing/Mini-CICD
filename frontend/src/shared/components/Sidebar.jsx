@@ -1,11 +1,13 @@
 import React from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
+
 const Sidebar = () => {
   const location = useLocation()
 
   const menuItems = [
     { path: '/', label: 'Dashboard', icon: '📊' },
+    { path: '/projects', label: 'Projects', icon: '📁' },
     { path: '/build', label: 'Build', icon: '🔨' },
     { path: '/deploy', label: 'Deploy', icon: '🚀' },
     { path: '/history', label: 'History', icon: '📜' },
@@ -50,16 +52,16 @@ const Sidebar = () => {
               borderLeft: isActive(item.path) ? '3px solid #60a5fa' : '3px solid transparent',
               backgroundColor: isActive(item.path) ? 'rgba(59, 130, 246, 0.1)' : 'transparent'
             }}
-            onMouseEnter={(e) => {
+            onMouseEnter={(event) => {
               if (!isActive(item.path)) {
-                e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'
-                e.currentTarget.style.color = 'white'
+                event.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'
+                event.currentTarget.style.color = 'white'
               }
             }}
-            onMouseLeave={(e) => {
+            onMouseLeave={(event) => {
               if (!isActive(item.path)) {
-                e.currentTarget.style.backgroundColor = 'transparent'
-                e.currentTarget.style.color = '#9ca3af'
+                event.currentTarget.style.backgroundColor = 'transparent'
+                event.currentTarget.style.color = '#9ca3af'
               }
             }}
           >

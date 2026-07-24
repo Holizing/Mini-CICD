@@ -1,5 +1,6 @@
 import React from 'react'
 
+
 const Navbar = () => {
   return (
     <nav style={{
@@ -31,26 +32,12 @@ const Navbar = () => {
         alignItems: 'center',
         gap: '16px'
       }}>
-        <button style={{
-          backgroundColor: 'transparent',
+        <span style={{
           color: '#9ca3af',
-          border: 'none',
-          padding: '8px 12px',
-          borderRadius: '6px',
-          cursor: 'pointer',
-          fontSize: '14px',
-          transition: 'all 0.2s'
-        }}
-        onMouseEnter={(e) => {
-          e.target.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'
-          e.target.style.color = 'white'
-        }}
-        onMouseLeave={(e) => {
-          e.target.style.backgroundColor = 'transparent'
-          e.target.style.color = '#9ca3af'
+          fontSize: '14px'
         }}>
-          Settings
-        </button>
+          Mini CI/CD
+        </span>
       </div>
     </nav>
   )
