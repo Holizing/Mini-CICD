@@ -20,8 +20,15 @@ class ProjectService:
     def get_project(self, project_id: int) -> Optional[Project]:
         return self.db.query(Project).filter(Project.id == project_id).first()
 
-    def get_projects(self, limit: int = 50, offset: int = 0) -> tuple[list[Project], int]:
+    def get_projects(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        project_status: Optional[str] = None,
+    ) -> tuple[list[Project], int]:
         query = self.db.query(Project)
+        if project_status:
+            query = query.filter(Project.status == project_status)
         total = query.count()
         projects = query.order_by(Project.id.desc()).offset(offset).limit(limit).all()
         return projects, total

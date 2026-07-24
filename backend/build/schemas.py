@@ -1,24 +1,41 @@
-from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BuildStartRequest(BaseModel):
-    project_id: int
-    project_name: str
-    branch: Optional[str] = None  # Optional for existing docker image mode
-    git_url: Optional[str] = None  # Optional for existing docker image mode
-    build_type: str = Field(default="source")  # source, docker
+    model_config = ConfigDict(extra="ignore")
+
+    project_id: int = Field(gt=0)
+    build_type: Literal["source", "docker"] = "source"
     build_script: Optional[str] = None
-    # Docker-specific build fields
-    docker_mode: Optional[str] = Field(default="build_from_git")  # build_from_git, existing_image
-    image_name: Optional[str] = None  # Required for docker build
+    docker_mode: Optional[Literal["build_from_git", "existing_image"]] = None
+    image_name: Optional[str] = None
     image_tag: Optional[str] = "latest"
     dockerfile_path: Optional[str] = "./Dockerfile"
     build_context: Optional[str] = "."
-    # Existing docker image mode fields
-    docker_image: Optional[str] = None  # Full image name with tag (e.g., nginx:latest)
-    docker_compose_file: Optional[str] = None  # Docker Compose file for existing image
+    docker_image: Optional[str] = None
+    docker_compose_file: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_build_options(self):
+        if self.build_type != "docker":
+            return self
+
+        self.docker_mode = self.docker_mode or "build_from_git"
+        if self.docker_mode == "existing_image" and not self.docker_image:
+            raise ValueError("docker_image is required for existing_image mode")
+        if self.docker_mode == "build_from_git" and not self.image_name:
+            raise ValueError("image_name is required for build_from_git mode")
+        return self
+
+
+class BuildExecutionInput(BaseModel):
+    repo_url: str
+    workspace_dir: str
+    logs_dir: str
+    timeout_seconds: int = Field(ge=1)
 
 
 class BuildResponse(BaseModel):

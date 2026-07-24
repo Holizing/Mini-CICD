@@ -1,6 +1,11 @@
 import api from '../../../shared/services/api'
 
 export const deployService = {
+  getCapabilities: async () => {
+    const response = await api.get('/deploy/capabilities')
+    return response.data
+  },
+
   startDeploy: async (data) => {
     const response = await api.post('/deploy/start', data)
     return response.data

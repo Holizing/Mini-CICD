@@ -1,0 +1,29 @@
+[Unit]
+Description=Mini-CICD FastAPI service
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=cicd
+Group=cicd
+SupplementaryGroups=docker
+WorkingDirectory=/home/cino/Mini-CICD
+Environment=HOME=/home/cicd
+Environment=PYTHONUNBUFFERED=1
+Environment=NPM_CONFIG_CACHE=/home/cino/Mini-CICD/runtime/npm-cache
+Environment=DOCKER_CONFIG=/home/cino/Mini-CICD/runtime/docker-config
+EnvironmentFile=/home/cino/Mini-CICD/runtime/config/mini-cicd.env
+ExecStart=/home/cino/Mini-CICD/.venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/home/cino/Mini-CICD/runtime
+
+[Install]
+WantedBy=multi-user.target

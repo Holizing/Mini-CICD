@@ -1,8 +1,16 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from backend.common.database import get_db
-from backend.deploy.schemas import DeployStartRequest, DeployResponse, DeployHistoryResponse, DeployStageResponse
+from backend.common.runtime import get_execution_settings
+from backend.deploy.schemas import (
+    DeployHistoryResponse,
+    DeploymentCapabilityResponse,
+    DeployResponse,
+    DeployStageResponse,
+    DeployStartRequest,
+)
 from backend.deploy.service import DeployService
+from backend.deploy.strategies import get_registry
 
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
@@ -20,9 +28,16 @@ def get_deploy_service(
     Returns:
         DeployService instance
     """
-    logs_dir = "logs"
-    workspace_dir = "workspace"
-    return DeployService(db, logs_dir, workspace_dir)
+    settings = get_execution_settings(db)
+    return DeployService(
+        db=db,
+        logs_dir=settings.logs_dir,
+        workspace_dir=settings.workspace_dir,
+        timeout_seconds=settings.deploy_timeout_seconds,
+        docker_enabled=settings.docker_enabled,
+        default_deploy_path=settings.default_deploy_path,
+        default_service_name=settings.default_service_name,
+    )
 
 
 @router.post("/start", response_model=DeployResponse)
@@ -44,10 +59,21 @@ async def start_deploy(
     try:
         deploy = deploy_service.start_deploy(request, background_tasks)
         return deploy
+    except HTTPException:
+        raise
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start deploy: {str(e)}")
+
+
+@router.get(
+    "/capabilities",
+    response_model=list[DeploymentCapabilityResponse],
+)
+async def get_deployment_capabilities():
+    """Return the deploy profiles enabled by the current server."""
+    return get_registry().list_capabilities()
 
 
 @router.get("/status/{deploy_id}", response_model=DeployResponse)

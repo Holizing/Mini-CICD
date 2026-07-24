@@ -78,14 +78,8 @@ class ProjectDetector:
                     result.framework = 'Spring Boot'
                     result.confidence = 0.9
                     result.packaging = 'JAR'
-                    result.recommended_deploy_path = '/var/lib/tomcat9/webapps'
-                    result.recommended_service_name = 'tomcat9'
-                    result.recommended_deploy_script = (
-                        'sudo -n systemctl stop tomcat9\n'
-                        'sudo -n rm -rf /var/lib/tomcat9/webapps/ROOT\n'
-                        'sudo -n cp {artifact} /var/lib/tomcat9/webapps/ROOT.war\n'
-                        'sudo -n systemctl start tomcat9'
-                    )
+                    result.recommended_deploy_path = '/opt/mini-cicd-apps/spring-boot'
+                    result.recommended_service_name = 'spring-boot'
                 elif 'spring' in content.lower():
                     result.framework = 'Spring'
                     result.confidence = 0.8
@@ -135,8 +129,8 @@ class ProjectDetector:
                     result.framework = 'Spring Boot'
                     result.confidence = 0.9
                     result.packaging = 'JAR'
-                    result.recommended_deploy_path = '/var/lib/tomcat9/webapps'
-                    result.recommended_service_name = 'tomcat9'
+                    result.recommended_deploy_path = '/opt/mini-cicd-apps/spring-boot'
+                    result.recommended_service_name = 'spring-boot'
                 elif 'quarkus' in content.lower():
                     result.framework = 'Quarkus'
                     result.confidence = 0.9
@@ -195,11 +189,6 @@ class ProjectDetector:
                 result.build_tool = 'npm'
                 result.recommended_deploy_path = '/var/www/express'
                 result.recommended_service_name = 'express'
-                result.recommended_deploy_script = (
-                    'cd /var/www/express\n'
-                    'npm install --production\n'
-                    'pm2 restart express || pm2 start app.js --name express'
-                )
             elif 'react' in dependencies_lower:
                 result.framework = 'React'
                 result.confidence = 0.85
@@ -207,11 +196,6 @@ class ProjectDetector:
                 result.packaging = 'Static'
                 result.recommended_deploy_path = '/var/www/react'
                 result.recommended_service_name = 'nginx'
-                result.recommended_deploy_script = (
-                    'cd /var/www/react\n'
-                    'npm run build\n'
-                    'sudo -n cp -r build/* /var/www/html/'
-                )
             elif 'vue' in dependencies_lower:
                 result.framework = 'Vue'
                 result.confidence = 0.85
@@ -291,11 +275,6 @@ class ProjectDetector:
                     result.build_tool = 'pip'
                     result.recommended_deploy_path = '/var/www/fastapi'
                     result.recommended_service_name = 'fastapi'
-                    result.recommended_deploy_script = (
-                        'cd /var/www/fastapi\n'
-                        'pip install -r requirements.txt\n'
-                        'pm2 restart fastapi || pm2 start uvicorn main:app --name fastapi'
-                    )
                 elif 'django' in content:
                     result.framework = 'Django'
                     result.confidence = 0.9

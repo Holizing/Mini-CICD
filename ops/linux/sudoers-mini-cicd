@@ -1,0 +1,2 @@
+Cmnd_Alias MINI_CICD_NGINX = /usr/bin/systemctl reload nginx, /usr/bin/systemctl restart nginx, /usr/bin/systemctl status nginx, /usr/bin/systemctl status nginx --no-pager
+deploy ALL=(root) NOPASSWD: MINI_CICD_NGINX

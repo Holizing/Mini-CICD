@@ -3,6 +3,12 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.deploy.artifacts import (
+    validate_identifier,
+    validate_project_name,
+    validate_remote_deploy_path,
+)
+
 
 ProjectStatus = Literal["active", "inactive"]
 
@@ -52,12 +58,20 @@ class ProjectBase(BaseModel):
             raise ValueError("Repository URL must start with http://, https://, ssh://, or git@")
         return value
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return validate_project_name(value)
+
+    @field_validator("service_name")
+    @classmethod
+    def validate_service_name(cls, value: str) -> str:
+        return validate_identifier(value, "Service name")
+
     @field_validator("deploy_path")
     @classmethod
     def validate_deploy_path(cls, value: str) -> str:
-        if not value.startswith("/"):
-            raise ValueError("Deploy path must be an absolute Linux path")
-        return value
+        return validate_remote_deploy_path(value)
 
 
 class ProjectCreate(ProjectBase):
@@ -95,12 +109,31 @@ class ProjectUpdate(BaseModel):
             raise ValueError("Repository URL must start with http://, https://, ssh://, or git@")
         return value
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: Optional[str]) -> Optional[str]:
+        return validate_project_name(value) if value is not None else value
+
+    @field_validator("service_name")
+    @classmethod
+    def validate_service_name(
+        cls,
+        value: Optional[str],
+    ) -> Optional[str]:
+        return (
+            validate_identifier(value, "Service name")
+            if value is not None
+            else value
+        )
+
     @field_validator("deploy_path")
     @classmethod
     def validate_deploy_path(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and not value.startswith("/"):
-            raise ValueError("Deploy path must be an absolute Linux path")
-        return value
+        return (
+            validate_remote_deploy_path(value)
+            if value is not None
+            else value
+        )
 
 
 class ProjectResponse(ProjectBase):

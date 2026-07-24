@@ -2,7 +2,7 @@
 Python deployment strategies.
 """
 from typing import Optional
-from .base import DeploymentStrategy, DeploymentContext
+from .base import DeploymentContext, DeploymentStrategy
 
 
 class DjangoStrategy(DeploymentStrategy):
@@ -140,7 +140,7 @@ class FastAPIStrategy(DeploymentStrategy):
     @property
     def supported_runtimes(self) -> list[str]:
         return ["Python"]
-    
+
     def can_handle(self, framework: str, runtime: str) -> bool:
         return framework == "FastAPI" and runtime == "Python"
     

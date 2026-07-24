@@ -4,7 +4,11 @@ from pathlib import Path
 from typing import Tuple, Optional
 
 
-def run_command(command: list, cwd: str) -> Tuple[bool, str, str]:
+def run_command(
+    command: list,
+    cwd: str,
+    timeout_seconds: float = 300,
+) -> Tuple[bool, str, str]:
     """
     Execute a shell command and return success status, stdout, stderr.
     
@@ -21,17 +25,20 @@ def run_command(command: list, cwd: str) -> Tuple[bool, str, str]:
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=300  # 5 minutes timeout
+            timeout=timeout_seconds,
         )
         success = result.returncode == 0
         return success, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
-        return False, "", "Command timed out after 300 seconds"
+        return False, "", f"Command timed out after {timeout_seconds:.0f} seconds"
     except Exception as e:
         return False, "", str(e)
 
 
-def get_commit_hash(project_path: str) -> Optional[str]:
+def get_commit_hash(
+    project_path: str,
+    timeout_seconds: float = 300,
+) -> Optional[str]:
     """
     Get the current commit hash of a git repository.
     
@@ -41,7 +48,11 @@ def get_commit_hash(project_path: str) -> Optional[str]:
     Returns:
         Commit hash string or None if failed
     """
-    success, stdout, _ = run_command(["git", "rev-parse", "HEAD"], project_path)
+    success, stdout, _ = run_command(
+        ["git", "rev-parse", "HEAD"],
+        project_path,
+        timeout_seconds,
+    )
     if success:
         return stdout.strip()
     return None

@@ -1,42 +1,64 @@
 import os
+import shlex
 import subprocess
 import time
 import traceback
 from datetime import datetime
 from typing import Optional
 
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
 
 from backend.common.database import SessionLocal
+from backend.deploy.artifacts import (
+    validate_docker_image,
+    validate_health_check_path,
+    validate_identifier,
+    validate_port_mapping,
+    validate_project_name,
+    validate_remote_deploy_path,
+    validate_remote_host,
+    validate_remote_user,
+    wait_for_http_health,
+)
 from backend.deploy.models import Deploy, DeployStage
-from backend.deploy.schemas import DeployStartRequest, DeployResponse
+from backend.deploy.schemas import (
+    DeployExecutionInput,
+    DeployResponse,
+    DeployStartRequest,
+)
 from backend.deploy.ssh import SSHClient
+from backend.deploy.strategies import get_registry
 from backend.deploy.utils import get_log_path
+from backend.project.models import Project
 
 
 def run_deploy_worker(
     deploy_id: int,
-    request_data: dict,
-    logs_dir: str,
-    workspace_dir: str,
+    execution_data: dict,
 ) -> None:
-    """Run a deploy using a database session owned by the worker."""
+    """Run a deploy with a database session owned by the background worker."""
     worker_started_at = time.time()
 
     try:
-        request = DeployStartRequest.model_validate(request_data)
+        execution = DeployExecutionInput.model_validate(execution_data)
         with SessionLocal() as db:
-            service = DeployService(db, logs_dir, workspace_dir)
-            try:
-                service._execute_deploy_sync(deploy_id, request)
-            except Exception:
-                db.rollback()
-                raise
+            service = DeployService(
+                db=db,
+                logs_dir=execution.logs_dir,
+                workspace_dir=execution.workspace_dir,
+                timeout_seconds=execution.timeout_seconds,
+            )
+            service._execute_deploy_sync(deploy_id, execution)
     except Exception as error:
         worker_traceback = traceback.format_exc()
         with SessionLocal() as db:
-            service = DeployService(db, logs_dir, workspace_dir)
+            service = DeployService(
+                db=db,
+                logs_dir=execution_data["logs_dir"],
+                workspace_dir=execution_data["workspace_dir"],
+                timeout_seconds=execution_data["timeout_seconds"],
+            )
             service._mark_deploy_failed(
                 deploy_id=deploy_id,
                 error=error,
@@ -46,16 +68,40 @@ def run_deploy_worker(
 
 
 class DeployService:
-    def __init__(self, db: Session, logs_dir: str, workspace_dir: str = "workspace"):
+    def __init__(
+        self,
+        db: Session,
+        logs_dir: str,
+        workspace_dir: str = "workspace",
+        timeout_seconds: int = 600,
+        docker_enabled: bool = True,
+        default_deploy_path: str = "/var/www/mini-cicd",
+        default_service_name: str = "mini-cicd-app",
+    ):
         self.db = db
-        self.logs_dir = logs_dir
-        # Convert workspace_dir to absolute path
+        self.logs_dir = os.path.abspath(logs_dir)
         self.workspace_dir = os.path.abspath(workspace_dir)
+        self.timeout_seconds = timeout_seconds
+        self.docker_enabled = docker_enabled
+        self.default_deploy_path = default_deploy_path
+        self.default_service_name = default_service_name
+        self.deadline = None
 
         # Stage tracking
         self.current_deploy_id = None
         self.stages = {}  # stage_name -> stage_id
         self.stage_logs = {}  # stage_name -> log_file_path
+
+    def _remaining_timeout(self) -> float:
+        if self.deadline is None:
+            return float(self.timeout_seconds)
+
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Deploy timed out after {self.timeout_seconds} seconds"
+            )
+        return max(0.1, remaining)
 
     def _log_stage(self, stage_name: str, message: str) -> None:
         """Write message to stage-specific log file."""
@@ -160,130 +206,257 @@ class DeployService:
         request: DeployStartRequest,
         background_tasks: BackgroundTasks,
     ) -> DeployResponse:
-        """
-        Start a new deploy process.
-        
-        Args:
-            request: Deploy start request with deploy details
-            
-        Returns:
-            Deploy response with deploy details
-        """
-        # Verify build exists and is successful
+        """Create a deploy from canonical Build data and schedule its worker."""
         from backend.build.models import Build
-        build = self.db.query(Build).filter(Build.id == request.build_id).first()
-        if not build:
-            raise ValueError(f"Build {request.build_id} not found")
+
+        build = self.db.get(Build, request.build_id)
+        if build is None:
+            raise HTTPException(status_code=404, detail="Build not found")
         if build.status != "success":
-            raise ValueError(f"Build {request.build_id} is not successful. Current status: {build.status}")
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Build {build.id} is not successful. "
+                    f"Current status: {build.status}"
+                ),
+            )
 
-        # Validate deploy type specific fields
-        if request.deploy_type == "docker":
+        project = self.db.get(Project, build.project_id)
+        if project is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Project for this build no longer exists",
+            )
+        if project.status != "active":
+            raise HTTPException(
+                status_code=409,
+                detail="Inactive projects cannot start new deploys",
+            )
+
+        request.server_ip = validate_remote_host(request.server_ip)
+        request.server_user = validate_remote_user(request.server_user)
+        validate_project_name(build.project_name)
+        request.health_check_path = validate_health_check_path(
+            request.health_check_path
+        )
+        request.port_mapping = validate_port_mapping(request.port_mapping)
+
+        deploy_type = build.build_type
+        if deploy_type not in {"source", "docker"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Unsupported build type: {deploy_type}",
+            )
+
+        docker_mode = build.docker_mode if deploy_type == "docker" else None
+        deploy_path = None
+        service_name = None
+        image_name = None
+        image_tag = None
+        docker_image = None
+        docker_compose_file = None
+
+        if deploy_type == "docker":
+            if not self.docker_enabled:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Docker execution is disabled in Settings",
+                )
             if not request.container_name:
-                raise ValueError("container_name is required for Docker deploy")
-            # Validate based on docker mode
-            if request.docker_mode == "existing_image":
-                if not request.docker_image:
-                    raise ValueError("docker_image is required for existing_image mode")
-            else:
-                # build_from_git mode requires image_name and image_tag from build
-                if not build.image_name or not build.image_tag:
-                    raise ValueError("Docker deploy requires a Docker build with image_name and image_tag for build_from_git mode")
-        else:
-            if not request.deploy_path:
-                raise ValueError("deploy_path is required for source deploy")
-            if not request.service_name:
-                raise ValueError("service_name is required for source deploy")
+                raise HTTPException(
+                    status_code=422,
+                    detail="container_name is required for Docker deploy",
+                )
+            request.container_name = validate_identifier(
+                request.container_name,
+                "Container name",
+            )
 
-        # Create deploy record
+            if docker_mode == "existing_image":
+                if not build.docker_image:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Build does not contain an existing Docker image",
+                    )
+                docker_image = validate_docker_image(build.docker_image)
+                docker_compose_file = build.docker_compose_file
+            elif docker_mode == "build_from_git":
+                if not build.image_name or not build.image_tag:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Docker build does not contain image_name "
+                            "and image_tag"
+                        ),
+                    )
+                image_name = build.image_name
+                image_tag = build.image_tag
+                validate_docker_image(f"{image_name}:{image_tag}")
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Unsupported Docker mode: {docker_mode}",
+                )
+        else:
+            deploy_path = (
+                request.deploy_path
+                or project.deploy_path
+                or build.recommended_deploy_path
+                or self.default_deploy_path
+            )
+            service_name = (
+                request.service_name
+                or project.service_name
+                or build.recommended_service_name
+                or self.default_service_name
+            )
+            deploy_path = validate_remote_deploy_path(deploy_path)
+            service_name = validate_identifier(
+                service_name,
+                "Service name",
+            )
+
+        # Detector recommendations are displayed by the frontend, but they
+        # must never execute unless the operator explicitly submits a script.
+        deploy_script = request.deploy_script
+        if deploy_type == "source":
+            resolution = get_registry().resolve_strategy(
+                build.detected_framework,
+                build.detected_runtime,
+                build.artifact_type,
+            )
+            if resolution.status == "experimental_disabled":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Deployment strategy {resolution.strategy.name} is "
+                        "experimental and disabled. Set "
+                        "MINI_CICD_ENABLE_EXPERIMENTAL_STRATEGIES=true "
+                        "to enable it."
+                    ),
+                )
+            if resolution.status == "artifact_mismatch":
+                expected = ", ".join(
+                    resolution.expected_artifact_types or []
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Build artifact is not supported by the detected "
+                        f"deployment strategy. Expected: {expected}"
+                    ),
+                )
+            if resolution.status == "unsupported":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "No deployment strategy is available for "
+                        f"framework={build.detected_framework}, "
+                        f"runtime={build.detected_runtime}"
+                    ),
+                )
+
         deploy = Deploy(
-            build_id=request.build_id,
-            project_id=request.project_id,
-            project_name=request.project_name,
-            branch=request.branch,
+            build_id=build.id,
+            project_id=build.project_id,
+            project_name=build.project_name,
+            branch=build.branch,
             server_ip=request.server_ip,
             server_user=request.server_user,
-            deploy_path=request.deploy_path,
-            service_name=request.service_name,
-            deploy_type=request.deploy_type,
-            deploy_script=request.deploy_script,
-            docker_mode=request.docker_mode,
+            deploy_path=deploy_path,
+            service_name=service_name,
+            deploy_type=deploy_type,
+            deploy_script=deploy_script,
+            docker_mode=docker_mode,
             container_name=request.container_name,
             port_mapping=request.port_mapping,
-            docker_image=request.docker_image,
-            docker_compose_file=request.docker_compose_file,
-            # Get Image Name and Tag from build record for Docker deploy (build_from_git mode)
-            image_name=build.image_name if build else None,
-            image_tag=build.image_tag if build else None,
+            docker_image=docker_image,
+            docker_compose_file=docker_compose_file,
+            image_name=image_name,
+            image_tag=image_tag,
             status="running",
-            log_path=get_log_path(self.logs_dir, 0)  # Temporary, will update after getting ID
+            log_path=get_log_path(self.logs_dir, 0),
         )
-        
+
         self.db.add(deploy)
         self.db.commit()
         self.db.refresh(deploy)
 
-        # Update log path with actual deploy ID
         deploy.log_path = get_log_path(self.logs_dir, deploy.id)
         self.db.commit()
 
-        # Initialize stages
-        self._initialize_stages(deploy.id, request.deploy_type, request.docker_mode)
+        self._initialize_stages(deploy.id, deploy_type, docker_mode)
 
-        # Log start
         self._log(deploy.log_path, f"=== Deploy #{deploy.id} Started ===")
-        self._log(deploy.log_path, f"Build ID: {request.build_id}")
-        self._log(deploy.log_path, f"Project: {request.project_name}")
-        self._log(deploy.log_path, f"Branch: {request.branch}")
+        self._log(deploy.log_path, f"Build ID: {build.id}")
+        self._log(deploy.log_path, f"Project: {build.project_name}")
+        self._log(deploy.log_path, f"Branch: {build.branch}")
         self._log(deploy.log_path, f"Server: {request.server_user}@{request.server_ip}")
-        self._log(deploy.log_path, f"Deploy Type: {request.deploy_type}")
-        if request.deploy_type == "docker":
-            self._log(deploy.log_path, f"Docker Mode: {request.docker_mode}")
+        self._log(deploy.log_path, f"Deploy Type: {deploy_type}")
+        if deploy_type == "docker":
+            self._log(deploy.log_path, f"Docker Mode: {docker_mode}")
             self._log(deploy.log_path, f"Container: {request.container_name}")
-            if request.docker_mode == "existing_image":
-                self._log(deploy.log_path, f"Docker Image: {request.docker_image}")
+            if docker_mode == "existing_image":
+                self._log(deploy.log_path, f"Docker Image: {docker_image}")
             else:
-                self._log(deploy.log_path, f"Image: {build.image_name}:{build.image_tag}")
+                self._log(deploy.log_path, f"Image: {image_name}:{image_tag}")
             if request.port_mapping:
                 self._log(deploy.log_path, f"Port Mapping: {request.port_mapping}")
         else:
-            self._log(deploy.log_path, f"Deploy Path: {request.deploy_path}")
-            self._log(deploy.log_path, f"Service: {request.service_name}")
+            self._log(deploy.log_path, f"Deploy Path: {deploy_path}")
+            self._log(deploy.log_path, f"Service: {service_name}")
+
+        execution = DeployExecutionInput(
+            build_id=build.id,
+            server_ip=request.server_ip,
+            server_user=request.server_user,
+            server_password=request.server_password,
+            server_ssh_key=request.server_ssh_key,
+            deploy_path=deploy_path,
+            service_name=service_name,
+            deploy_type=deploy_type,
+            deploy_script=deploy_script,
+            docker_mode=docker_mode,
+            container_name=request.container_name,
+            image_name=image_name,
+            image_tag=image_tag,
+            port_mapping=request.port_mapping,
+            docker_image=docker_image,
+            docker_compose_file=docker_compose_file,
+            health_check_port=request.health_check_port,
+            health_check_path=request.health_check_path or "/",
+            workspace_dir=self.workspace_dir,
+            logs_dir=self.logs_dir,
+            timeout_seconds=self.timeout_seconds,
+        )
 
         response = self._deploy_to_response(deploy)
         background_tasks.add_task(
             run_deploy_worker,
             deploy.id,
-            request.model_dump(),
-            self.logs_dir,
-            self.workspace_dir,
+            execution.model_dump(),
         )
         return response
 
     def _execute_deploy_sync(
         self,
         deploy_id: int,
-        request: DeployStartRequest,
+        request: DeployExecutionInput,
     ) -> None:
-        """
-        Execute deploy synchronously with this worker's database session.
-
-        Args:
-            deploy_id: Deploy record ID
-            request: Deploy start request
-        """
+        """Execute a deploy using this worker's database session."""
         from backend.build.models import Build
 
-        deploy = self.db.query(Deploy).filter(Deploy.id == deploy_id).first()
-        if not deploy:
+        deploy = self.db.get(Deploy, deploy_id)
+        if deploy is None:
             raise ValueError(f"Deploy {deploy_id} not found")
 
-        build = self.db.query(Build).filter(Build.id == request.build_id).first()
-        if not build:
+        build = self.db.get(Build, request.build_id)
+        if build is None:
             raise ValueError(f"Build {request.build_id} not found")
 
         self._load_stages(deploy_id)
         start_time = time.time()
+        self.deadline = time.monotonic() + self.timeout_seconds
         log_file = deploy.log_path
         ssh = None
 
@@ -291,40 +464,48 @@ class DeployService:
             self._log(log_file, f"[DEBUG] _execute_deploy_sync started for deploy #{deploy.id}")
             self._log(log_file, f"[DEBUG] Request details: deploy_type={request.deploy_type}, server={request.server_ip}")
 
-            # Validate Build stage
             self._start_stage("Validate Build")
             self._log_stage("Validate Build", f"Validating build #{request.build_id}...")
-            self._log(log_file, f"Step 1: Getting build record...")
+            self._log(log_file, "Step 1: Getting build record...")
             self._log(log_file, f"Build record found: artifact_path={build.artifact_path}, artifact_type={build.artifact_type}")
-            self._log_stage("Validate Build", f"Build validated: artifact_path={build.artifact_path}, artifact_type={build.artifact_type}")
+            self._log_stage(
+                "Validate Build",
+                f"Build validated: artifact_path={build.artifact_path}, artifact_type={build.artifact_type}",
+            )
             self._complete_stage("Validate Build", "success")
 
-            # Connect to Server stage
             self._start_stage("Connect to Server")
             self._log_stage("Connect to Server", f"Initializing SSH client for {request.server_user}@{request.server_ip}...")
-            self._log(log_file, f"Step 2: Initializing SSH client...")
+            self._log(log_file, "Step 2: Initializing SSH client...")
             self._log(log_file, f"Step 2: Host: {request.server_ip}, User: {request.server_user}")
             self._log(log_file, f"Step 2: Using password: {'Yes' if request.server_password else 'No'}")
             self._log(log_file, f"Step 2: Using SSH key: {'Yes' if request.server_ssh_key else 'No'}")
-            # Initialize SSH client
             ssh = SSHClient(
                 host=request.server_ip,
                 username=request.server_user,
                 password=request.server_password,
-                key=request.server_ssh_key
+                key=request.server_ssh_key,
+                timeout_seconds=self.timeout_seconds,
+                deadline=self.deadline,
             )
 
             self._log(log_file, f"Step 3: Connecting to SSH server {request.server_user}@{request.server_ip}...")
-            self._log_stage("Connect to Server", f"Connecting to SSH server...")
-            # Connect to server
-            self._log(log_file, f"Step 3: Attempting SSH connection (timeout=60s)...")
+            self._log_stage("Connect to Server", "Connecting to SSH server...")
+            self._log(
+                log_file,
+                (
+                    "Step 3: Attempting SSH connection "
+                    f"(deploy deadline={self.timeout_seconds}s)..."
+                ),
+            )
             success, error = ssh.connect()
             if not success:
                 self._log(log_file, f"Step 3: SSH connection failed: {error}")
                 self._log_stage("Connect to Server", f"SSH connection failed: {error}")
                 self._complete_stage("Connect to Server", "failed", error)
-                raise Exception(error)
-            self._log(log_file, f"Step 3: SSH connection established successfully")
+                raise RuntimeError(error)
+
+            self._log(log_file, "Step 3: SSH connection established successfully")
             self._log_stage("Connect to Server", "SSH connection established successfully")
             self._complete_stage("Connect to Server", "success")
 
@@ -333,10 +514,9 @@ class DeployService:
             else:
                 self._execute_source_deploy(ssh, deploy, request, build, log_file)
 
-            # Finalize Deploy stage
             self._start_stage("Finalize Deploy")
             self._log_stage("Finalize Deploy", "Updating deploy record...")
-            self._log(log_file, f"Step 8: Updating deploy record...")
+            self._log(log_file, "Step 8: Updating deploy record...")
             end_time = datetime.utcnow()
             duration = int(time.time() - start_time)
 
@@ -345,7 +525,7 @@ class DeployService:
             deploy.duration = duration
             deploy.error_message = None
             self.db.commit()
-            self._log(log_file, f"Step 8: Deploy record updated successfully")
+            self._log(log_file, "Step 8: Deploy record updated successfully")
             self._log(log_file, f"=== Deploy #{deploy.id} Completed Successfully in {duration}s ===")
             self._log_stage("Finalize Deploy", f"Deploy completed successfully in {duration}s")
             self._complete_stage("Finalize Deploy", "success")
@@ -355,9 +535,9 @@ class DeployService:
         finally:
             if ssh is not None:
                 try:
-                    self._log(log_file, f"Step 7: Closing SSH connection...")
+                    self._log(log_file, "Step 7: Closing SSH connection...")
                     ssh.close()
-                    self._log(log_file, f"Step 7: SSH connection closed")
+                    self._log(log_file, "Step 7: SSH connection closed")
                 except Exception as close_error:
                     self._log(log_file, f"Failed to close SSH connection cleanly: {close_error}")
 
@@ -368,10 +548,9 @@ class DeployService:
         worker_started_at: float,
         worker_traceback: str,
     ) -> None:
-        """Persist a terminal deploy failure in a recovery session."""
-        self.db.rollback()
-        deploy = self.db.query(Deploy).filter(Deploy.id == deploy_id).first()
-        if not deploy:
+        """Persist a terminal failure after an unexpected worker error."""
+        deploy = self.db.get(Deploy, deploy_id)
+        if deploy is None:
             return
 
         end_time = datetime.utcnow()
@@ -383,41 +562,40 @@ class DeployService:
         deploy.duration = duration
         deploy.error_message = error_message
 
-        running_stages = (
+        incomplete_stages = (
             self.db.query(DeployStage)
             .filter(
                 DeployStage.deploy_id == deploy_id,
-                DeployStage.status == "running",
+                DeployStage.status.in_(["pending", "running"]),
             )
             .all()
         )
-        for stage in running_stages:
+        for stage in incomplete_stages:
             stage.status = "failed"
             stage.finished_at = end_time
             stage.error_message = error_message
             if stage.started_at:
                 stage.duration = int((end_time - stage.started_at).total_seconds())
+            else:
+                stage.duration = 0
 
         self.db.commit()
 
         if deploy.log_path:
-            try:
-                self._log(deploy.log_path, f"=== Deploy #{deploy.id} Failed after {duration}s ===")
-                self._log(deploy.log_path, f"Error: {error_message}")
-                self._log(deploy.log_path, f"Traceback:\n{worker_traceback}")
-            except OSError:
-                pass
+            self._log(deploy.log_path, f"=== Deploy #{deploy.id} Failed after {duration}s ===")
+            self._log(deploy.log_path, f"Error: {error_message}")
+            self._log(deploy.log_path, f"Traceback:\n{worker_traceback}")
 
     def _execute_source_deploy(
         self,
         ssh: SSHClient,
         deploy: Deploy,
-        request: DeployStartRequest,
+        request: DeployExecutionInput,
         build,
         log_file: str
     ) -> None:
         """Execute source-based deployment using strategy-based approach."""
-        from backend.deploy.strategies import get_strategy, DeploymentContext
+        from backend.deploy.strategies import DeploymentContext
 
         # Upload Artifact stage
         self._start_stage("Upload Artifact")
@@ -459,8 +637,15 @@ class DeployService:
         self._log(log_file, f"Detected Framework: {framework}")
         self._log(log_file, f"Detected Runtime: {runtime}")
 
-        # Get appropriate deployment strategy
-        strategy = get_strategy(framework, runtime)
+        resolution = get_registry().resolve_strategy(
+            framework,
+            runtime,
+            build.artifact_type if build else None,
+        )
+        strategy = resolution.strategy if resolution.status in {
+            "verified",
+            "experimental_enabled",
+        } else None
 
         if strategy:
             self._log(log_file, f"Using deployment strategy: {strategy.name}")
@@ -488,7 +673,11 @@ class DeployService:
                 artifact_path=artifact_path,
                 artifact_type=build.artifact_type if build else None,
                 project_name=build.project_name if build else None,
-                additional_params={'framework': framework}
+                additional_params={'framework': framework},
+                workspace_dir=self.workspace_dir,
+                release_id=str(deploy.id),
+                health_check_port=request.health_check_port,
+                health_check_path=request.health_check_path,
             )
 
             # Execute strategy
@@ -505,6 +694,15 @@ class DeployService:
 
                 if validation_success:
                     self._log(log_file, f"Step 5: Deployment validation passed")
+                    self._start_stage("Execute Deploy Script")
+                    self._log_stage(
+                        "Execute Deploy Script",
+                        "Deployment strategy handled execution; no custom script was required.",
+                    )
+                    self._complete_stage(
+                        "Execute Deploy Script",
+                        "success",
+                    )
                 else:
                     self._log(log_file, f"Step 5: Deployment validation failed")
                     raise Exception("Deployment validation failed")
@@ -514,14 +712,23 @@ class DeployService:
         else:
             self._log(log_file, f"No suitable deployment strategy found for framework={framework}, runtime={runtime}")
             self._log(log_file, f"ERROR: Unsupported framework/runtime combination")
-            self._log(log_file, f"Supported frameworks: {[s.name for s in get_registry()._strategies]}")
-            raise Exception(f"No deployment strategy found for framework={framework}, runtime={runtime}. Please ensure your project type is supported.")
+            supported = [
+                capability["name"]
+                for capability in get_registry().list_capabilities()
+                if capability["enabled"]
+            ]
+            self._log(log_file, f"Enabled deployment profiles: {supported}")
+            raise Exception(
+                "Deployment strategy unavailable "
+                f"(status={resolution.status}) for framework={framework}, "
+                f"runtime={runtime}, artifact_type={build.artifact_type if build else None}"
+            )
 
     def _execute_docker_deploy(
         self,
         ssh: SSHClient,
         deploy: Deploy,
-        request: DeployStartRequest,
+        request: DeployExecutionInput,
         build,
         log_file: str
     ) -> None:
@@ -570,7 +777,9 @@ class DeployService:
         # Check if container is running
         self._log(log_file, f"Validating container {container_name}...")
         success, stdout, stderr = ssh.execute_command(
-            f"docker ps --filter name=^{container_name}$ --format '{{{{.Names}}}} {{{{.Status}}}}'"
+            "docker ps "
+            f"--filter {shlex.quote(f'name=^{container_name}$')} "
+            "--format '{{.Names}} {{.Status}}'"
         )
         if success and stdout.strip():
             self._log(log_file, f"✓ Container running: {stdout.strip()}")
@@ -583,7 +792,9 @@ class DeployService:
         # Check container health status if available
         self._log(log_file, f"Validating container health status...")
         success, stdout, stderr = ssh.execute_command(
-            f"docker inspect --format='{{{{.State.Health.Status}}}}' {container_name} 2>/dev/null || echo 'no-healthcheck'"
+            "docker inspect --format='{{.State.Health.Status}}' "
+            f"{shlex.quote(container_name)} "
+            "2>/dev/null || echo 'no-healthcheck'"
         )
         if success and stdout.strip() and stdout.strip() != "no-healthcheck":
             health_status = stdout.strip()
@@ -596,6 +807,17 @@ class DeployService:
                 self._log(log_file, f"  Container may not be healthy")
         else:
             self._log(log_file, f"✓ No health check configured")
+
+        if request.health_check_port and not wait_for_http_health(
+            ssh,
+            request.health_check_port,
+            request.health_check_path,
+        ):
+            raise Exception(
+                "Docker HTTP health check failed on "
+                f"127.0.0.1:{request.health_check_port}"
+                f"{request.health_check_path}"
+            )
         
         self._log(log_file, f"Step 6: Docker deployment validation passed")
 
@@ -618,7 +840,7 @@ class DeployService:
                 ["docker", "save", "-o", local_tar, full_image],
                 capture_output=True,
                 text=True,
-                timeout=1800
+                timeout=self._remaining_timeout(),
             )
             if result.returncode != 0:
                 raise Exception(f"docker save failed: {result.stderr or result.stdout}")
@@ -626,7 +848,9 @@ class DeployService:
             tar_size_mb = os.path.getsize(local_tar) / (1024 * 1024)
             self._log(log_file, f"Image saved to {local_tar} ({tar_size_mb:.1f} MB)")
         except subprocess.TimeoutExpired:
-            raise Exception("docker save timed out after 30 minutes")
+            raise Exception(
+                f"docker save timed out after {self.timeout_seconds} seconds"
+            )
         except FileNotFoundError:
             raise Exception("Docker CLI not found on CI server. Install Docker to deploy images.")
 
@@ -638,7 +862,9 @@ class DeployService:
             self._log(log_file, f"Image uploaded successfully")
 
             self._log(log_file, f"Loading Docker image on remote server...")
-            success, stdout, stderr = ssh.execute_command(f"docker load -i {remote_tar}")
+            success, stdout, stderr = ssh.execute_command(
+                f"docker load -i {shlex.quote(remote_tar)}"
+            )
             if stdout:
                 self._log(log_file, f"STDOUT:\n{stdout}")
             if stderr:
@@ -648,7 +874,7 @@ class DeployService:
 
             self._log(log_file, f"Docker image loaded on remote server")
 
-            ssh.execute_command(f"rm -f {remote_tar}")
+            ssh.execute_command(f"rm -f -- {shlex.quote(remote_tar)}")
         finally:
             if os.path.exists(local_tar):
                 os.remove(local_tar)
@@ -664,7 +890,10 @@ class DeployService:
         Pull Docker image from registry on remote server.
         """
         self._log(log_file, f"Pulling Docker image on remote server: {docker_image}")
-        success, stdout, stderr = ssh.execute_command(f"docker pull {docker_image}")
+        docker_image = validate_docker_image(docker_image)
+        success, stdout, stderr = ssh.execute_command(
+            f"docker pull {shlex.quote(docker_image)}"
+        )
         if stdout:
             self._log(log_file, f"STDOUT:\n{stdout}")
         if stderr:
@@ -676,22 +905,32 @@ class DeployService:
     def _run_docker_container(
         self,
         ssh: SSHClient,
-        request: DeployStartRequest,
+        request: DeployExecutionInput,
         deploy: Deploy,
         log_file: str,
         full_image: str
     ) -> None:
         """Stop existing container (if any) and run a new one."""
         container_name = request.container_name
+        quoted_container_name = shlex.quote(container_name)
+        full_image = validate_docker_image(full_image)
 
         self._log(log_file, f"Stopping existing container (if any): {container_name}")
-        ssh.execute_command(f"docker stop {container_name} 2>/dev/null || true")
-        ssh.execute_command(f"docker rm {container_name} 2>/dev/null || true")
+        ssh.execute_command(
+            f"docker stop {quoted_container_name} 2>/dev/null || true"
+        )
+        ssh.execute_command(
+            f"docker rm {quoted_container_name} 2>/dev/null || true"
+        )
 
-        run_cmd = f"docker run -d --name {container_name} --restart unless-stopped"
+        run_cmd = (
+            "docker run -d "
+            f"--name {quoted_container_name} --restart unless-stopped"
+        )
         if request.port_mapping:
-            run_cmd += f" -p {request.port_mapping}"
-        run_cmd += f" {full_image}"
+            port_mapping = validate_port_mapping(request.port_mapping)
+            run_cmd += f" -p {shlex.quote(port_mapping)}"
+        run_cmd += f" {shlex.quote(full_image)}"
 
         self._log(log_file, f"Running container: {run_cmd}")
         success, stdout, stderr = ssh.execute_command(run_cmd)
@@ -714,19 +953,22 @@ class DeployService:
             deploy_path: Deployment path
             log_file: Log file path
         """
-        self._log(log_file, f"Executing custom deploy script...")
-        self._log(log_file, f"Deploy script:\n{deploy_script}")
+        self._log(log_file, "Executing custom deploy script...")
         
         # Split script into commands (one per line)
         commands = [cmd.strip() for cmd in deploy_script.splitlines() if cmd.strip()]
         
         for i, cmd in enumerate(commands, 1):
             self._log(log_file, f"\n=== Executing Command {i}/{len(commands)} ===")
-            self._log(log_file, f"Command: {cmd}")
+            self._log(
+                log_file,
+                f"Executing custom command {i}; command text is redacted",
+            )
             
             # Execute command with optional deploy path context
             if deploy_path:
-                full_cmd = f"cd {deploy_path} && {cmd}"
+                safe_deploy_path = validate_remote_deploy_path(deploy_path)
+                full_cmd = f"cd {shlex.quote(safe_deploy_path)} && {cmd}"
             else:
                 full_cmd = cmd
             success, stdout, stderr = ssh.execute_command(full_cmd)
@@ -739,7 +981,7 @@ class DeployService:
             
             # Check if command failed
             if not success:
-                raise Exception(f"Command {i} failed: {cmd}\nError: {stderr}")
+                raise Exception(f"Custom command {i} failed: {stderr}")
             
             self._log(log_file, f"Command {i} completed successfully")
         
@@ -817,120 +1059,18 @@ class DeployService:
             f.write(f"{message}\n")
 
     def _upload_artifact(self, ssh: SSHClient, artifact_path: str, artifact_type: str, deploy_path: str, service_name: str, log_file: str) -> None:
-        """
-        Upload artifact to remote server and deploy it.
+        """Upload an artifact for an explicitly supplied custom script."""
+        from backend.deploy.artifacts import transfer_artifact
 
-        Args:
-            ssh: SSH client instance
-            artifact_path: Local path to the artifact
-            artifact_type: Type of artifact (file or directory)
-            deploy_path: Deployment path on remote server
-            service_name: Name of the service to restart
-            log_file: Log file path
-        """
-        import os
-
-        # Convert relative artifact_path to absolute path
-        if artifact_path and not os.path.isabs(artifact_path):
-            artifact_path = os.path.join(self.workspace_dir, artifact_path)
-            self._log(log_file, f"Converted artifact path to absolute: {artifact_path}")
-
-        # Safety check: if artifact is a directory, search for WAR files
-        if artifact_path and (artifact_type == "directory" or os.path.isdir(artifact_path)):
-            self._log(log_file, f"WARNING: artifact_path is a directory: {artifact_path}")
-            self._log(log_file, f"Searching for WAR files in artifact_path/target/...")
-            target_dir = os.path.join(artifact_path, 'target')
-            if os.path.isdir(target_dir):
-                war_files = []
-                for file in os.listdir(target_dir):
-                    if file.endswith('.war'):
-                        war_path = os.path.join(target_dir, file)
-                        war_files.append(war_path)
-                        self._log(log_file, f"Found WAR file: {war_path}")
-                
-                if war_files:
-                    # Sort by modification time, newest first
-                    war_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-                    artifact_path = war_files[0]
-                    artifact_type = "war"
-                    self._log(log_file, f"Using newest WAR file: {artifact_path}")
-                else:
-                    self._log(log_file, f"ERROR: No WAR artifact found in {target_dir}")
-                    raise Exception("No WAR artifact found. Please build the project first.")
-            else:
-                self._log(log_file, f"ERROR: target directory not found: {target_dir}")
-                raise Exception("No WAR artifact found. Please build the project first.")
-
-        # Debug logging before upload
-        self._log(log_file, f"DEBUG: artifact_path = {artifact_path}")
-        self._log(log_file, f"DEBUG: exists = {os.path.exists(artifact_path) if artifact_path else 'N/A'}")
-        self._log(log_file, f"DEBUG: isfile = {os.path.isfile(artifact_path) if artifact_path else 'N/A'}")
-        self._log(log_file, f"DEBUG: isdir = {os.path.isdir(artifact_path) if artifact_path else 'N/A'}")
-        
-        # Final safety check: never upload a directory
-        if artifact_path and os.path.isdir(artifact_path):
-            self._log(log_file, f"ERROR: Cannot upload directory: {artifact_path}")
-            raise Exception(f"Cannot upload directory. Expected a WAR file but got a directory: {artifact_path}")
-
-        self._log(log_file, f"=== Uploading Artifact ===")
-        self._log(log_file, f"Local artifact: {artifact_path}")
-        self._log(log_file, f"Artifact type: {artifact_type}")
-        self._log(log_file, f"Deploy path: {deploy_path}")
-
-        if artifact_type == "directory":
-            # Upload directory
-            remote_temp_path = f"/tmp/{os.path.basename(artifact_path)}"
-            self._log(log_file, f"Uploading directory to {remote_temp_path}")
-
-            success, error = ssh.upload_directory(artifact_path, remote_temp_path)
-            if not success:
-                raise Exception(f"Directory upload failed: {error}")
-            self._log(log_file, f"Directory uploaded successfully to {remote_temp_path}")
-
-            # Copy directory to deploy path
-            self._log(log_file, f"Copying directory to {deploy_path}")
-            copy_cmd = f"sudo -n cp -r {remote_temp_path}/* {deploy_path}/"
-            self._log(log_file, f"Executing: {copy_cmd}")
-            success, stdout, stderr = ssh.execute_command(copy_cmd)
-            if not success:
-                raise Exception(f"Failed to copy directory: {stderr}")
-            self._log(log_file, f"Directory copied to {deploy_path}")
-
-        else:
-            # Upload file
-            artifact_filename = os.path.basename(artifact_path)
-            remote_temp_path = f"/tmp/{artifact_filename}"
-            self._log(log_file, f"Uploading file to {remote_temp_path}")
-
-            success, error = ssh.upload_file(artifact_path, remote_temp_path)
-            if not success:
-                raise Exception(f"File upload failed: {error}")
-            self._log(log_file, f"File uploaded successfully to {remote_temp_path}")
-
-            # Copy file to deploy path
-            self._log(log_file, f"Copying file to {deploy_path}")
-            copy_cmd = f"sudo -n cp {remote_temp_path} {deploy_path}/"
-            self._log(log_file, f"Executing: {copy_cmd}")
-            success, stdout, stderr = ssh.execute_command(copy_cmd)
-            if not success:
-                raise Exception(f"Failed to copy file: {stderr}")
-            self._log(log_file, f"File copied to {deploy_path}")
-
-        # Restart service if specified
-        if service_name:
-            self._log(log_file, f"Restarting service: {service_name}")
-            restart_cmd = f"sudo -n systemctl restart {service_name}"
-            self._log(log_file, f"Executing: {restart_cmd}")
-            success, stdout, stderr = ssh.execute_command(restart_cmd)
-            if not success:
-                raise Exception(f"Failed to restart service: {stderr}")
-            self._log(log_file, f"Service {service_name} restarted successfully")
-
-            # Check service status
-            status_cmd = f"sudo -n systemctl status {service_name}"
-            self._log(log_file, f"Executing: {status_cmd}")
-            success, stdout, stderr = ssh.execute_command(status_cmd)
-            self._log(log_file, f"Service status:\n{stdout}")
+        remote_path = transfer_artifact(
+            ssh,
+            artifact_path,
+            artifact_type,
+            deploy_path,
+            lambda message: self._log(log_file, message),
+            workspace_dir=self.workspace_dir,
+        )
+        self._log(log_file, f"Artifact available at {remote_path}")
 
     def _deploy_to_response(self, deploy: Deploy) -> DeployResponse:
         """

@@ -1,12 +1,27 @@
-"""
-Regression tests for deployment strategy selection and execution.
-Tests ensure that strategy selection is based on framework/runtime metadata only,
-and that modifying one strategy does not affect others.
-"""
+"""Regression tests for deployment strategy selection and execution."""
+
+import json
+
 import pytest
-from backend.deploy.strategies import get_strategy, get_registry
+from backend.build.runner import BuildRunner
+from backend.deploy.artifacts import (
+    DeploymentSafetyError,
+    validate_identifier,
+    validate_remote_deploy_path,
+    wait_for_http_health,
+    wait_for_user_service_health,
+)
+from backend.deploy.strategies import get_registry, get_strategy
 from backend.deploy.strategies.base import DeploymentContext
-from unittest.mock import Mock, MagicMock
+from backend.deploy.strategies.registry import DeploymentStrategyRegistry
+from backend.deploy.strategies.verified import (
+    VerifiedExpressStrategy,
+    VerifiedFastAPIStrategy,
+    VerifiedReactStaticStrategy,
+    VerifiedSpringBootJarStrategy,
+)
+from backend.deploy.ssh import SSHClient
+from unittest.mock import MagicMock, Mock, patch
 
 
 class MockSSHClient:
@@ -23,6 +38,40 @@ class MockSSHClient:
         return True, ""
     
     def upload_directory(self, local_path: str, remote_path: str):
+        return True, ""
+
+
+class VerifiedMockSSHClient(MockSSHClient):
+    def __init__(
+        self,
+        *,
+        previous_release: str | None = None,
+        health_success: bool = True,
+    ):
+        super().__init__()
+        self.uploaded_files = []
+        self.uploaded_directories = []
+        self.previous_release = previous_release
+        self.health_success = health_success
+
+    def execute_command(self, command: str, use_pty: bool = False):
+        self.executed_commands.append(command)
+        if command.startswith("readlink "):
+            if self.previous_release:
+                return True, f"{self.previous_release}\n", ""
+            return False, "", ""
+        if "curl --fail" in command and not self.health_success:
+            return False, "", "unhealthy"
+        if "is-active" in command:
+            return True, "active\n", ""
+        return True, "", ""
+
+    def upload_file(self, local_path: str, remote_path: str):
+        self.uploaded_files.append((local_path, remote_path))
+        return True, ""
+
+    def upload_directory(self, local_path: str, remote_path: str):
+        self.uploaded_directories.append((local_path, remote_path))
         return True, ""
 
 
@@ -463,18 +512,324 @@ class TestStrategyDefaultPaths:
         
         assert "/var/www/" in deploy_path
         assert service_name is not None
-    
+
     def test_python_default_paths(self):
         """Test Python strategies provide appropriate default paths"""
         django_strategy = get_strategy("Django", "Python")
         assert django_strategy is not None
-        
+
         deploy_path = django_strategy.get_default_deploy_path("MyApp")
         service_name = django_strategy.get_default_service_name("MyApp")
-        
+
         assert "/var/www/" in deploy_path
         assert service_name is not None
 
 
+class TestDeploymentCapabilities:
+    def test_verified_profiles_are_explicit(self):
+        capabilities = DeploymentStrategyRegistry(
+            enable_experimental=False
+        ).list_capabilities()
+        verified_names = {
+            capability["name"]
+            for capability in capabilities
+            if capability["tier"] == "verified"
+        }
+        assert verified_names == {
+            "Docker",
+            "Express",
+            "FastAPI",
+            "React/Vite Static",
+            "Spring Boot JAR",
+        }
+
+    def test_experimental_strategy_is_disabled_by_default(self):
+        resolution = DeploymentStrategyRegistry(
+            enable_experimental=False
+        ).resolve_strategy("Django", "Python", "directory")
+        assert resolution.status == "experimental_disabled"
+        assert resolution.strategy.name == "Django"
+
+    def test_experimental_strategy_can_be_enabled_explicitly(self):
+        resolution = DeploymentStrategyRegistry(
+            enable_experimental=True
+        ).resolve_strategy("Django", "Python", "directory")
+        assert resolution.status == "experimental_enabled"
+
+    def test_artifact_type_disambiguates_spring_boot(self):
+        registry = DeploymentStrategyRegistry(enable_experimental=False)
+        jar_resolution = registry.resolve_strategy(
+            "Spring Boot",
+            "Java",
+            "jar",
+        )
+        war_resolution = registry.resolve_strategy(
+            "Spring Boot",
+            "Java",
+            "war",
+        )
+        assert jar_resolution.status == "verified"
+        assert jar_resolution.strategy.name == "Spring Boot JAR"
+        assert war_resolution.status == "experimental_disabled"
+        assert war_resolution.strategy.name == "Spring Boot WAR"
+
+    def test_artifact_mismatch_is_reported(self):
+        resolution = DeploymentStrategyRegistry(
+            enable_experimental=False
+        ).resolve_strategy("FastAPI", "Python", "jar")
+        assert resolution.status == "artifact_mismatch"
+        assert resolution.expected_artifact_types == ["directory"]
+
+
+class TestDeploymentInputSafety:
+    @pytest.mark.parametrize(
+        "deploy_path",
+        [
+            "/",
+            "relative/path",
+            "/srv/../etc",
+            "/srv/app;rm",
+            "/srv/app path",
+        ],
+    )
+    def test_unsafe_deploy_paths_are_rejected(self, deploy_path):
+        with pytest.raises(DeploymentSafetyError):
+            validate_remote_deploy_path(deploy_path)
+
+    def test_safe_deploy_path_is_normalized(self):
+        assert validate_remote_deploy_path("/srv/apps/demo/") == (
+            "/srv/apps/demo"
+        )
+
+    def test_unsafe_service_name_is_rejected(self):
+        with pytest.raises(DeploymentSafetyError):
+            validate_identifier("demo;restart", "Service name")
+
+
+class TestSSHHostVerification:
+    def test_reject_policy_and_known_hosts_are_required(self, tmp_path):
+        known_hosts = tmp_path / "known_hosts"
+        known_hosts.write_text("test-host-key", encoding="utf-8")
+        paramiko_client = MagicMock()
+
+        with patch(
+            "backend.deploy.ssh.paramiko.SSHClient",
+            return_value=paramiko_client,
+        ):
+            client = SSHClient(
+                host="127.0.0.1",
+                username="deploy",
+                password="not-logged",
+                known_hosts_path=str(known_hosts),
+            )
+            success, error = client.connect()
+
+        assert success, error
+        paramiko_client.load_system_host_keys.assert_called_once_with(
+            str(known_hosts)
+        )
+        policy = paramiko_client.set_missing_host_key_policy.call_args.args[0]
+        assert policy.__class__.__name__ == "RejectPolicy"
+
+    def test_missing_known_hosts_file_blocks_connection(self, tmp_path):
+        client = SSHClient(
+            host="127.0.0.1",
+            username="deploy",
+            password="not-logged",
+            known_hosts_path=str(tmp_path / "missing"),
+        )
+        success, error = client.connect()
+
+        assert not success
+        assert "known_hosts file not found" in error
+
+
+class TestVerifiedStrategyExecution:
+    def test_http_readiness_uses_bounded_remote_retries(self):
+        ssh = VerifiedMockSSHClient()
+
+        assert wait_for_http_health(ssh, 8080, "/health")
+        assert "--retry 29" in ssh.executed_commands[-1]
+        assert "--retry-max-time 30" in ssh.executed_commands[-1]
+
+    def test_user_service_readiness_checks_service_before_http(self):
+        ssh = VerifiedMockSSHClient()
+
+        assert wait_for_user_service_health(
+            ssh,
+            "demo-service",
+            8080,
+            "/health",
+        )
+        assert "seq 1 30" in ssh.executed_commands[-2]
+        assert "systemctl --user is-active --quiet" in (
+            ssh.executed_commands[-2]
+        )
+        assert "curl --fail" in ssh.executed_commands[-1]
+
+    @pytest.mark.parametrize(
+        (
+            "strategy",
+            "artifact_name",
+            "artifact_type",
+            "service_name",
+            "health_port",
+        ),
+        [
+            (
+                VerifiedExpressStrategy(),
+                "express",
+                "directory",
+                "express-app",
+                3000,
+            ),
+            (
+                VerifiedFastAPIStrategy(),
+                "fastapi",
+                "directory",
+                "fastapi-app",
+                8000,
+            ),
+            (
+                VerifiedSpringBootJarStrategy(),
+                "demo.jar",
+                "jar",
+                "spring-app",
+                8080,
+            ),
+            (
+                VerifiedReactStaticStrategy(),
+                "dist",
+                "directory",
+                "nginx",
+                8081,
+            ),
+        ],
+    )
+    def test_verified_profile_executes_and_validates(
+        self,
+        tmp_path,
+        strategy,
+        artifact_name,
+        artifact_type,
+        service_name,
+        health_port,
+    ):
+        artifact = tmp_path / artifact_name
+        if artifact_type == "directory":
+            artifact.mkdir()
+        else:
+            artifact.write_bytes(b"jar")
+
+        if isinstance(strategy, VerifiedExpressStrategy):
+            (artifact / "package.json").write_text(
+                json.dumps({"scripts": {"start": "node app.js"}}),
+                encoding="utf-8",
+            )
+            (artifact / "package-lock.json").write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            (artifact / "app.js").write_text("", encoding="utf-8")
+        elif isinstance(strategy, VerifiedFastAPIStrategy):
+            (artifact / "main.py").write_text("", encoding="utf-8")
+            (artifact / "requirements.txt").write_text(
+                "fastapi==0.100.0\nuvicorn==0.22.0\n",
+                encoding="utf-8",
+            )
+        elif isinstance(strategy, VerifiedReactStaticStrategy):
+            (artifact / "index.html").write_text(
+                "<main>ok</main>",
+                encoding="utf-8",
+            )
+
+        ssh = VerifiedMockSSHClient()
+        context = DeploymentContext(
+            ssh_client=ssh,
+            deploy_path=f"/srv/{service_name}",
+            service_name=service_name,
+            artifact_path=str(artifact),
+            artifact_type=artifact_type,
+            project_name="demo",
+            workspace_dir=str(tmp_path),
+            release_id="42",
+            health_check_port=health_port,
+        )
+
+        assert strategy.execute(context, lambda _: None)
+        assert strategy.validate(context, lambda _: None)
+        assert any("/current" in command for command in ssh.executed_commands)
+        assert any(
+            "curl --fail" in command
+            for command in ssh.executed_commands
+        )
+
+    def test_failed_health_check_rolls_back(self, tmp_path):
+        artifact = tmp_path / "dist"
+        artifact.mkdir()
+        (artifact / "index.html").write_text("ok", encoding="utf-8")
+        ssh = VerifiedMockSSHClient(
+            previous_release="/srv/react/releases/old",
+            health_success=False,
+        )
+        context = DeploymentContext(
+            ssh_client=ssh,
+            deploy_path="/srv/react",
+            service_name="nginx",
+            artifact_path=str(artifact),
+            artifact_type="directory",
+            workspace_dir=str(tmp_path),
+            release_id="43",
+            health_check_port=8081,
+        )
+        strategy = VerifiedReactStaticStrategy()
+
+        assert strategy.execute(context, lambda _: None)
+        assert not strategy.validate(context, lambda _: None)
+        assert any(
+            ".rollback" in command
+            and "/srv/react/releases/old" in command
+            for command in ssh.executed_commands
+        )
+
+    def test_fastapi_requires_pinned_dependencies(self, tmp_path):
+        artifact = tmp_path / "fastapi"
+        artifact.mkdir()
+        (artifact / "main.py").write_text("", encoding="utf-8")
+        (artifact / "requirements.txt").write_text(
+            "fastapi>=0.100\n",
+            encoding="utf-8",
+        )
+        context = DeploymentContext(
+            ssh_client=VerifiedMockSSHClient(),
+            deploy_path="/srv/fastapi",
+            service_name="fastapi-app",
+            artifact_path=str(artifact),
+            artifact_type="directory",
+            workspace_dir=str(tmp_path),
+            release_id="44",
+        )
+
+        assert not VerifiedFastAPIStrategy().execute(
+            context,
+            lambda _: None,
+        )
+
+    def test_multiple_spring_jars_are_rejected(self, tmp_path):
+        project = tmp_path / "project"
+        target = project / "target"
+        target.mkdir(parents=True)
+        (target / "one.jar").write_bytes(b"one")
+        (target / "two.jar").write_bytes(b"two")
+        runner = BuildRunner(
+            str(tmp_path / "workspace"),
+            str(tmp_path / "logs"),
+        )
+
+        with pytest.raises(ValueError, match="Multiple deployable JAR"):
+            runner.detect_artifact(
+                str(project),
+                str(tmp_path / "artifact.log"),
+            )
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -1,21 +1,32 @@
-"""
-Base deployment strategy interface.
-"""
+"""Base deployment strategy contracts."""
+
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
 from dataclasses import dataclass
+from enum import Enum
+import shlex
+from typing import Any, Dict, Optional
+
+
+class StrategyTier(str, Enum):
+    VERIFIED = "verified"
+    EXPERIMENTAL = "experimental"
 
 
 @dataclass
 class DeploymentContext:
-    """Context for deployment execution"""
-    ssh_client: Any  # SSHClient instance
+    """Runtime inputs shared by deployment strategies."""
+
+    ssh_client: Any
     deploy_path: str
     service_name: str
     artifact_path: Optional[str] = None
     artifact_type: Optional[str] = None
     project_name: Optional[str] = None
     additional_params: Dict[str, Any] = None
+    workspace_dir: Optional[str] = None
+    release_id: Optional[str] = None
+    health_check_port: Optional[int] = None
+    health_check_path: str = "/"
     
     def __post_init__(self):
         if self.additional_params is None:
@@ -46,7 +57,48 @@ class DeploymentStrategy(ABC):
     def supported_runtimes(self) -> list[str]:
         """List of runtimes this strategy supports"""
         pass
-    
+
+    @property
+    def tier(self) -> StrategyTier:
+        """Deployment confidence. Existing recipes are experimental by default."""
+        return StrategyTier.EXPERIMENTAL
+
+    @property
+    def supported_artifact_types(self) -> list[str]:
+        """Artifact types accepted by this strategy."""
+        return ["directory", "file", "jar", "war"]
+
+    @property
+    def required_tools(self) -> list[str]:
+        """Remote tools required by this strategy."""
+        return []
+
+    @property
+    def default_health_check_port(self) -> Optional[int]:
+        return None
+
+    def tier_for(
+        self,
+        framework: str,
+        runtime: str,
+        artifact_type: Optional[str],
+    ) -> StrategyTier:
+        """Allow a shared strategy to verify only selected profiles."""
+        return self.tier
+
+    def supports_artifact(self, artifact_type: Optional[str]) -> bool:
+        return artifact_type is None or artifact_type in self.supported_artifact_types
+
+    def matches(
+        self,
+        framework: str,
+        runtime: str,
+        artifact_type: Optional[str] = None,
+    ) -> bool:
+        return self.can_handle(framework, runtime) and self.supports_artifact(
+            artifact_type
+        )
+
     @abstractmethod
     def can_handle(self, framework: str, runtime: str) -> bool:
         """
@@ -91,7 +143,10 @@ class DeploymentStrategy(ABC):
         """
         if context.service_name:
             log_func(f"Validating service {context.service_name}...")
-            success, stdout, stderr = context.ssh_client.execute_command(f"sudo -n systemctl is-active {context.service_name}")
+            service_name = shlex.quote(context.service_name)
+            success, stdout, stderr = context.ssh_client.execute_command(
+                f"sudo -n systemctl is-active {service_name}"
+            )
             if success and "active" in stdout:
                 log_func(f"✓ Service active (running)")
                 return True

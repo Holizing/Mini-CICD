@@ -1,290 +1,220 @@
+"""Deadline-aware SSH client with strict host-key verification."""
+
+import os
+import posixpath
+import time
+from typing import Optional, Tuple
+
 import paramiko
-from typing import Tuple, Optional
 
 
 class SSHClient:
-    def __init__(self, host: str, username: str, password: Optional[str] = None, key: Optional[str] = None):
+    def __init__(
+        self,
+        host: str,
+        username: str,
+        password: Optional[str] = None,
+        key: Optional[str] = None,
+        timeout_seconds: int = 600,
+        deadline: Optional[float] = None,
+        known_hosts_path: Optional[str] = None,
+    ):
         self.host = host
         self.username = username
         self.password = password
         self.key = key
+        self.timeout_seconds = timeout_seconds
+        self.deadline = deadline or (time.monotonic() + timeout_seconds)
+        self.known_hosts_path = (
+            known_hosts_path
+            or os.getenv("MINI_CICD_SSH_KNOWN_HOSTS")
+        )
         self.client = None
 
-    def connect(self) -> Tuple[bool, str]:
-        """
-        Establish SSH connection.
+    def _remaining_timeout(self) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Deploy timed out after {self.timeout_seconds} seconds"
+            )
+        return max(0.1, remaining)
 
-        Returns:
-            Tuple of (success: bool, error_message: str)
-        """
+    def _open_sftp(self):
+        if self.client is None:
+            raise RuntimeError("SSH client not connected")
+        sftp = self.client.open_sftp()
+        sftp.get_channel().settimeout(self._remaining_timeout())
+        return sftp
+
+    def connect(self) -> Tuple[bool, str]:
+        """Connect only when the server key already exists in known_hosts."""
         try:
             self.client = paramiko.SSHClient()
-            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            if self.known_hosts_path:
+                known_hosts = os.path.abspath(
+                    os.path.expanduser(self.known_hosts_path)
+                )
+                if not os.path.isfile(known_hosts):
+                    return (
+                        False,
+                        f"SSH known_hosts file not found: {known_hosts}",
+                    )
+                self.client.load_system_host_keys(known_hosts)
+            else:
+                self.client.load_system_host_keys()
+            self.client.set_missing_host_key_policy(paramiko.RejectPolicy())
+
+            connection_timeout = min(60.0, self._remaining_timeout())
+            banner_timeout = min(30.0, connection_timeout)
+            connect_options = {
+                "hostname": self.host,
+                "username": self.username,
+                "timeout": connection_timeout,
+                "auth_timeout": connection_timeout,
+                "banner_timeout": banner_timeout,
+            }
 
             if self.key:
-                # Connect using SSH key
-                import os
-                if not os.path.exists(self.key):
-                    return False, f"SSH key file not found: {self.key}"
-                key_file = paramiko.RSAKey.from_private_key_file(self.key)
-                self.client.connect(
-                    hostname=self.host,
-                    username=self.username,
-                    pkey=key_file,
-                    timeout=60,  # Increased from 30 to 60 seconds
-                    auth_timeout=60,
-                    banner_timeout=30
+                key_path = os.path.abspath(os.path.expanduser(self.key))
+                if not os.path.isfile(key_path):
+                    return False, f"SSH key file not found: {key_path}"
+                connect_options["pkey"] = (
+                    paramiko.RSAKey.from_private_key_file(key_path)
                 )
+            elif self.password:
+                connect_options["password"] = self.password
             else:
-                # Connect using password
-                if not self.password:
-                    return False, "SSH password not provided"
-                self.client.connect(
-                    hostname=self.host,
-                    username=self.username,
-                    password=self.password,
-                    timeout=60,  # Increased from 30 to 60 seconds
-                    auth_timeout=60,
-                    banner_timeout=30
-                )
+                return False, "SSH password or key is required"
 
+            self.client.connect(**connect_options)
             return True, ""
-        except paramiko.AuthenticationException as e:
-            return False, f"SSH authentication failed: {str(e)}"
-        except paramiko.SSHException as e:
-            return False, f"SSH connection error: {str(e)}"
-        except Exception as e:
-            return False, f"SSH connection failed: {str(e)}"
+        except paramiko.BadHostKeyException:
+            return False, "SSH host key does not match known_hosts"
+        except paramiko.AuthenticationException:
+            return False, "SSH authentication failed"
+        except paramiko.SSHException as error:
+            return False, f"SSH connection error: {error}"
+        except Exception as error:
+            return False, f"SSH connection failed: {error}"
 
-    def execute_command(self, command: str, use_pty: bool = False) -> Tuple[bool, str, str]:
-        """
-        Execute a command on the remote server.
-
-        Args:
-            command: Command to execute
-            use_pty: Whether to allocate a pseudo-terminal (default: False)
-
-        Returns:
-            Tuple of (success: bool, stdout: str, stderr: str)
-        """
-        print(f"[SSH] Executing command: {command}")
-        print(f"[SSH] use_pty: {use_pty}")
-        
-        if not self.client:
-            print(f"[SSH] ERROR: SSH client not connected")
+    def execute_command(
+        self,
+        command: str,
+        use_pty: bool = False,
+    ) -> Tuple[bool, str, str]:
+        if self.client is None:
             return False, "", "SSH client not connected"
 
         try:
-            # Automatically add -n flag to sudo commands for passwordless sudo
-            # This prevents sudo from prompting for password even if NOPASSWD is configured
-            original_command = command
-            if 'sudo' in command and '-n' not in command.split():
-                # Insert -n after sudo (e.g., "sudo systemctl" -> "sudo -n systemctl")
-                command = command.replace('sudo', 'sudo -n', 1)
-                print(f"[SSH] Modified command with -n flag: {command}")
-            else:
-                print(f"[SSH] Command unchanged (no sudo or already has -n): {command}")
-
-            # Only use PTY if explicitly requested (for interactive commands)
-            # For simple commands, PTY is not needed and can cause hanging
-            stdin, stdout, stderr = self.client.exec_command(command, timeout=300, get_pty=use_pty)
-
-            # Read output
-            stdout_str = stdout.read().decode('utf-8')
-            stderr_str = stderr.read().decode('utf-8')
-
-            # Get exit status
+            _, stdout, stderr = self.client.exec_command(
+                command,
+                timeout=self._remaining_timeout(),
+                get_pty=use_pty,
+            )
+            stdout_text = stdout.read().decode("utf-8", errors="replace")
+            stderr_text = stderr.read().decode("utf-8", errors="replace")
             exit_status = stdout.channel.recv_exit_status()
-            success = exit_status == 0
+            return exit_status == 0, stdout_text, stderr_text
+        except Exception as error:
+            return False, "", f"Command execution failed: {error}"
 
-            print(f"[SSH] Command completed: exit_status={exit_status}, success={success}")
-            if stdout_str:
-                print(f"[SSH] stdout: {stdout_str[:200]}")  # Log first 200 chars
-            if stderr_str:
-                print(f"[SSH] stderr: {stderr_str[:200]}")  # Log first 200 chars
-            
-            return success, stdout_str, stderr_str
-        except Exception as e:
-            print(f"[SSH] Exception in execute_command: {str(e)}")
-            import traceback
-            print(f"[SSH] Traceback: {traceback.format_exc()}")
-            return False, "", f"Command execution failed: {str(e)}"
-
-    def upload_file(self, local_path: str, remote_path: str) -> Tuple[bool, str]:
-        """
-        Upload a file to the remote server using SFTP.
-
-        Args:
-            local_path: Path to the local file
-            remote_path: Path to the remote file
-
-        Returns:
-            Tuple of (success: bool, error_message: str)
-        """
-        if not self.client:
+    def upload_file(
+        self,
+        local_path: str,
+        remote_path: str,
+    ) -> Tuple[bool, str]:
+        if self.client is None:
             return False, "SSH client not connected"
 
+        sftp = None
         try:
-            sftp = self.client.open_sftp()
+            sftp = self._open_sftp()
             sftp.put(local_path, remote_path)
-            sftp.close()
             return True, ""
-        except Exception as e:
-            return False, f"File upload failed: {str(e)}"
+        except Exception as error:
+            return False, f"File upload failed: {error}"
+        finally:
+            if sftp is not None:
+                sftp.close()
 
-    def upload_directory(self, local_dir: str, remote_dir: str) -> Tuple[bool, str]:
-        """
-        Upload a directory to the remote server using SFTP.
-
-        Args:
-            local_dir: Path to the local directory
-            remote_dir: Path to the remote directory
-
-        Returns:
-            Tuple of (success: bool, error_message: str)
-        """
-        if not self.client:
+    def upload_directory(
+        self,
+        local_dir: str,
+        remote_dir: str,
+    ) -> Tuple[bool, str]:
+        if self.client is None:
             return False, "SSH client not connected"
+        if not os.path.isdir(local_dir):
+            return False, f"Local directory does not exist: {local_dir}"
 
-        import os
+        excluded_directories = {
+            ".git",
+            ".idea",
+            ".next",
+            ".venv",
+            ".vscode",
+            "__pycache__",
+            "cache",
+            "coverage",
+            "logs",
+            "node_modules",
+            "tmp",
+            "venv",
+            "vendor",
+        }
 
-        # Exclude directories from upload (dependencies, cache, etc.)
-        exclude_dirs = {'.git', 'node_modules', 'venv', '__pycache__', 'target', 'build', 'dist', 'coverage', 'vendor', '.next', '.venv', 'tmp', 'cache', 'logs', '.idea', '.vscode'}
-
+        sftp = None
         try:
-            # Check if local directory exists
-            if not os.path.exists(local_dir):
-                return False, f"Local directory does not exist: {local_dir}"
-            if not os.path.isdir(local_dir):
-                return False, f"Local path is not a directory: {local_dir}"
+            sftp = self._open_sftp()
+            self._mkdir_recursive(sftp, remote_dir)
 
-            sftp = self.client.open_sftp()
+            for root, directories, files in os.walk(local_dir):
+                directories[:] = [
+                    directory
+                    for directory in directories
+                    if directory not in excluded_directories
+                ]
+                relative_root = os.path.relpath(root, local_dir)
+                remote_root = (
+                    remote_dir
+                    if relative_root == "."
+                    else posixpath.join(
+                        remote_dir,
+                        relative_root.replace("\\", "/"),
+                    )
+                )
+                self._mkdir_recursive(sftp, remote_root)
 
-            # Create remote directory if it doesn't exist
-            try:
-                sftp.stat(remote_dir)
-            except IOError:
-                # Directory doesn't exist, create it recursively
-                self._mkdir_recursive(sftp, remote_dir)
-
-            # First pass: create all directory structure
-            for root, dirs, files in os.walk(local_dir):
-                # Exclude unwanted directories
-                dirs[:] = [d for d in dirs if d not in exclude_dirs]
-                
-                # Calculate relative path
-                rel_path = os.path.relpath(root, local_dir)
-                if rel_path == '.':
-                    remote_path = remote_dir
-                else:
-                    remote_path = os.path.join(remote_dir, rel_path).replace('\\', '/')
-                    # Ensure the remote subdirectory exists
-                    try:
-                        sftp.stat(remote_path)
-                    except IOError:
-                        self._mkdir_recursive(sftp, remote_path)
-
-                # Create subdirectories
-                for dir_name in dirs:
-                    full_remote_dir = os.path.join(remote_path, dir_name).replace('\\', '/')
-                    try:
-                        sftp.stat(full_remote_dir)
-                    except IOError:
-                        self._mkdir_recursive(sftp, full_remote_dir)
-
-            # Second pass: upload all files
-            for root, dirs, files in os.walk(local_dir):
-                # Exclude unwanted directories
-                dirs[:] = [d for d in dirs if d not in exclude_dirs]
-                
-                # Calculate relative path
-                rel_path = os.path.relpath(root, local_dir)
-                print(f"[DEBUG] rel_path = {rel_path}")
-                if rel_path == '.':
-                    remote_path = remote_dir
-                    print(f"[DEBUG] remote_path = {remote_path} (root)")
-                else:
-                    remote_path = os.path.join(remote_dir, rel_path).replace('\\', '/')
-                    print(f"[DEBUG] remote_path = {remote_path} (subdir)")
-
-                # Upload files
-                for file_name in files:
-                    local_file = os.path.join(root, file_name)
-                    remote_file = os.path.join(remote_path, file_name).replace('\\', '/')
-                    
-                    print(f"[DEBUG] local_file = {local_file}")
-                    print(f"[DEBUG] remote_file = {remote_file}")
-                    
-                    # Check remote parent directory
-                    import posixpath
-                    remote_parent = posixpath.dirname(remote_file)
-                    print(f"[DEBUG] remote_parent = {remote_parent}")
-                    
-                    try:
-                        sftp.stat(remote_parent)
-                        print(f"[DEBUG] remote_parent exists: {repr(remote_parent)}")
-                    except IOError as e:
-                        print(f"[DEBUG] remote_parent does not exist: {repr(remote_parent)}")
-                        print(f"[DEBUG] Creating remote_parent: {repr(remote_parent)}")
-                        self._mkdir_recursive(sftp, remote_parent)
-                        print(f"[DEBUG] remote_parent creation completed, verifying: {repr(remote_parent)}")
-                        # Verify it was actually created
-                        try:
-                            sftp.stat(remote_parent)
-                            print(f"[DEBUG] remote_parent verified exists: {repr(remote_parent)}")
-                        except IOError as e:
-                            print(f"[DEBUG] remote_parent still does not exist after creation: {repr(remote_parent)}")
-                            print(f"[DEBUG] Error: {str(e)}")
-                            raise Exception(f"Failed to create remote_parent {repr(remote_parent)}")
-                    
-                    print(f"[DEBUG] Uploading file: {local_file} -> {remote_file}")
-                    print(f"[DEBUG] Final verification before upload: {repr(remote_file)}")
+                for directory in directories:
+                    self._mkdir_recursive(
+                        sftp,
+                        posixpath.join(remote_root, directory),
+                    )
+                for filename in files:
+                    local_file = os.path.join(root, filename)
+                    remote_file = posixpath.join(remote_root, filename)
                     sftp.put(local_file, remote_file)
-                    print(f"[DEBUG] File uploaded successfully")
-
-            sftp.close()
             return True, ""
-        except Exception as e:
-            import traceback
-            return False, f"Directory upload failed: {str(e)}\nTraceback:\n{traceback.format_exc()}"
+        except Exception as error:
+            return False, f"Directory upload failed: {error}"
+        finally:
+            if sftp is not None:
+                sftp.close()
 
-    def _mkdir_recursive(self, sftp, path: str):
-        """
-        Recursively create directories on remote server.
+    def _mkdir_recursive(self, sftp, path: str) -> None:
+        normalized = posixpath.normpath(path)
+        if not normalized.startswith("/") or ".." in normalized.split("/"):
+            raise ValueError("Remote SFTP path must be absolute and safe")
 
-        Args:
-            sftp: SFTP client
-            path: Path to create
-        """
-        print(f"[DEBUG] ENTER _mkdir_recursive: {repr(path)}")
-        import posixpath
-        dirs = [d for d in path.split('/') if d]  # Filter out empty strings
-        print(f"[DEBUG] Split path: {dirs}")
-        current_dir = ''
-        for dir_name in dirs:
-            # Use posixpath.join to properly construct absolute paths
-            current_dir = posixpath.join(current_dir, dir_name) if current_dir else '/' + dir_name
-            print(f"[DEBUG] Checking: {repr(current_dir)}")
+        current = "/"
+        for component in [part for part in normalized.split("/") if part]:
+            current = posixpath.join(current, component)
             try:
-                sftp.stat(current_dir)
-                print(f"[DEBUG] Exists: {repr(current_dir)}")
+                sftp.stat(current)
             except IOError:
-                print(f"[DEBUG] Creating: {repr(current_dir)}")
-                try:
-                    sftp.mkdir(current_dir)
-                    print(f"[DEBUG] mkdir() returned for: {repr(current_dir)}")
-                    # Verify it was actually created
-                    sftp.stat(current_dir)
-                    print(f"[DEBUG] Verified created: {repr(current_dir)}")
-                except Exception as e:
-                    print(f"[DEBUG] Failed to create {repr(current_dir)}: {str(e)}")
-                    import traceback
-                    print(f"[DEBUG] Traceback: {traceback.format_exc()}")
-                    raise
-        print(f"[DEBUG] EXIT _mkdir_recursive: {repr(path)}")
+                sftp.mkdir(current)
 
-    def close(self):
-        """Close SSH connection."""
-        if self.client:
+    def close(self) -> None:
+        if self.client is not None:
             self.client.close()
             self.client = None
