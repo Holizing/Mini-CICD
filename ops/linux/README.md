@@ -155,7 +155,7 @@ sudo systemctl reload nginx
 Use:
 
 ```text
-deploy_path: /home/cino/Mini-CICD/runtime/deployments/source-demo
+deploy_path: /home/cino/Mini-CICD/runtime/deployments/react-vite
 service_name: nginx
 health_check_port: 8081
 health_check_path: /
