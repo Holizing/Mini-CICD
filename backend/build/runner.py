@@ -254,6 +254,44 @@ class BuildRunner:
                 rel_path = os.path.relpath(artifact_path, self.workspace_dir)
                 return rel_path, "war"
 
+        # Spring Boot executable JARs normally live directly in Maven target/
+        # or Gradle build/libs/. Reject ambiguity instead of deploying an
+        # arbitrary archive.
+        jar_candidates = []
+        for jar_directory in (
+            os.path.join(project_root, "target"),
+            os.path.join(project_root, "build", "libs"),
+        ):
+            if not os.path.isdir(jar_directory):
+                continue
+            for filename in os.listdir(jar_directory):
+                lowered = filename.lower()
+                if not lowered.endswith(".jar"):
+                    continue
+                if (
+                    lowered.startswith("original-")
+                    or lowered.endswith("-plain.jar")
+                    or lowered.endswith("-sources.jar")
+                    or lowered.endswith("-javadoc.jar")
+                ):
+                    continue
+                jar_candidates.append(os.path.join(jar_directory, filename))
+
+        if len(jar_candidates) > 1:
+            names = ", ".join(
+                sorted(os.path.basename(path) for path in jar_candidates)
+            )
+            raise ValueError(
+                f"Multiple deployable JAR artifacts found: {names}"
+            )
+        if len(jar_candidates) == 1:
+            artifact_path = jar_candidates[0]
+            self._log(log_file, f"Using deployable JAR: {artifact_path}")
+            return (
+                os.path.relpath(artifact_path, self.workspace_dir),
+                "jar",
+            )
+
         # Exclude directories from artifact search (dependencies, cache, etc.)
         # Note: 'target' is NOT excluded here since we already checked it above
         exclude_dirs = {'.git', 'node_modules', 'venv', '__pycache__', 'build', 'dist', 'coverage', 'vendor', '.next', '.venv', 'tmp', 'cache', 'logs'}
@@ -290,7 +328,13 @@ class BuildRunner:
                 # Return relative path from workspace_dir
                 rel_path = os.path.relpath(artifact_path, self.workspace_dir)
                 # Determine artifact type based on extension
-                artifact_type = "war" if artifact_path.endswith('.war') else "file"
+                artifact_type = (
+                    "war"
+                    if artifact_path.endswith(".war")
+                    else "jar"
+                    if artifact_path.endswith(".jar")
+                    else "file"
+                )
                 return rel_path, artifact_type
 
             # If multiple artifacts found, prefer the one in target/ (Maven) or build/ (Gradle)
@@ -301,7 +345,13 @@ class BuildRunner:
                         self._log(log_file, f"Multiple artifacts found, using preferred directory: {artifact_path}")
                         # Return relative path from workspace_dir
                         rel_path = os.path.relpath(artifact_path, self.workspace_dir)
-                        artifact_type = "war" if artifact_path.endswith('.war') else "file"
+                        artifact_type = (
+                            "war"
+                            if artifact_path.endswith(".war")
+                            else "jar"
+                            if artifact_path.endswith(".jar")
+                            else "file"
+                        )
                         return rel_path, artifact_type
 
             # Fallback to the first artifact
@@ -309,7 +359,13 @@ class BuildRunner:
             self._log(log_file, f"Multiple artifacts found, using first: {artifact_path}")
             # Return relative path from workspace_dir
             rel_path = os.path.relpath(artifact_path, self.workspace_dir)
-            artifact_type = "war" if artifact_path.endswith('.war') else "file"
+            artifact_type = (
+                "war"
+                if artifact_path.endswith(".war")
+                else "jar"
+                if artifact_path.endswith(".jar")
+                else "file"
+            )
             return rel_path, artifact_type
 
         self._log(log_file, f"No artifacts found")

@@ -28,6 +28,8 @@ const Deploy = () => {
   const [imageTag, setImageTag] = useState('latest')
   const [dockerImage, setDockerImage] = useState('')
   const [dockerComposeFile, setDockerComposeFile] = useState('')
+  const [healthCheckPort, setHealthCheckPort] = useState('')
+  const [healthCheckPath, setHealthCheckPath] = useState('/')
   const [loading, setLoading] = useState(false)
   const [currentDeploy, setCurrentDeploy] = useState(null)
   const [log, setLog] = useState('')
@@ -36,6 +38,9 @@ const Deploy = () => {
   const [builds, setBuilds] = useState([])
   const [buildsLoading, setBuildsLoading] = useState(true)
   const [buildsError, setBuildsError] = useState('')
+  const [capabilities, setCapabilities] = useState([])
+  const [capabilitiesLoading, setCapabilitiesLoading] = useState(true)
+  const [capabilitiesError, setCapabilitiesError] = useState('')
   // Stage-related state
   const [stages, setStages] = useState([])
   const [selectedStage, setSelectedStage] = useState(null)
@@ -44,16 +49,43 @@ const Deploy = () => {
   const projectRequestId = useRef(0)
 
   const selectedBuild = builds.find((build) => build.id === Number(buildId))
+  const selectedCapability = selectedBuild
+    ? capabilities
+      .filter((capability) => {
+        if (selectedBuild.build_type === 'docker') {
+          return capability.id === 'docker'
+        }
+        return (
+          capability.frameworks.includes(selectedBuild.detected_framework)
+          && capability.runtimes.includes(selectedBuild.detected_runtime)
+          && capability.artifact_types.includes(selectedBuild.artifact_type)
+        )
+      })
+      .sort((left, right) => {
+        if (left.status === 'verified') return -1
+        if (right.status === 'verified') return 1
+        return 0
+      })[0]
+    : null
   const projectReady = (
     selectedBuild
     && selectedProject
     && selectedProject.id === selectedBuild.project_id
     && selectedProject.status === 'active'
   )
-  const startDisabled = loading || buildsLoading || projectLoading || !projectReady
+  const profileReady = Boolean(selectedCapability?.enabled)
+  const startDisabled = (
+    loading
+    || buildsLoading
+    || projectLoading
+    || capabilitiesLoading
+    || !projectReady
+    || !profileReady
+  )
 
   useEffect(() => {
     fetchSuccessfulBuilds()
+    fetchCapabilities()
   }, [])
 
   // Poll deploy status and log if running
@@ -113,6 +145,21 @@ const Deploy = () => {
     }
   }
 
+  const fetchCapabilities = async () => {
+    try {
+      setCapabilitiesLoading(true)
+      setCapabilitiesError('')
+      setCapabilities(await deployService.getCapabilities())
+    } catch (err) {
+      console.error('Failed to load deployment capabilities:', err)
+      setCapabilitiesError(
+        err.response?.data?.detail || 'Failed to load deployment capabilities'
+      )
+    } finally {
+      setCapabilitiesLoading(false)
+    }
+  }
+
   const fetchLog = async (deployId) => {
     try {
       setLogLoading(true)
@@ -146,7 +193,7 @@ const Deploy = () => {
   const handleStartDeploy = async (e) => {
     e.preventDefault()
 
-    if (!selectedBuild || !projectReady || !serverIp) {
+    if (!selectedBuild || !projectReady || !profileReady || !serverIp) {
       setError('Please select a build with an active project and fill in all required fields')
       return
     }
@@ -191,7 +238,9 @@ const Deploy = () => {
         service_name: deployType === 'source' ? serviceName : undefined,
         deploy_script: deployScript || undefined,
         container_name: deployType === 'docker' ? containerName : undefined,
-        port_mapping: deployType === 'docker' ? portMapping || undefined : undefined
+        port_mapping: deployType === 'docker' ? portMapping || undefined : undefined,
+        health_check_port: healthCheckPort ? parseInt(healthCheckPort) : undefined,
+        health_check_path: healthCheckPath || '/'
       })
 
       setCurrentDeploy(response)
@@ -216,6 +265,8 @@ const Deploy = () => {
     setServiceName('')
     setDeployScript('')
     setDeployScriptSuggestion('')
+    setHealthCheckPort('')
+    setHealthCheckPath('/')
     const requestId = ++projectRequestId.current
 
     const selectedBuild = builds.find(b => b.id === parseInt(selectedBuildId))
@@ -242,6 +293,22 @@ const Deploy = () => {
     setDockerImage(selectedBuild.docker_image || '')
     setDockerComposeFile(selectedBuild.docker_compose_file || '')
     setDeployScriptSuggestion(selectedBuild.recommended_deploy_script || '')
+    const capability = capabilities
+      .filter((item) => (
+        selectedBuild.build_type === 'docker'
+          ? item.id === 'docker'
+          : (
+            item.frameworks.includes(selectedBuild.detected_framework)
+            && item.runtimes.includes(selectedBuild.detected_runtime)
+            && item.artifact_types.includes(selectedBuild.artifact_type)
+          )
+      ))
+      .sort((left, right) => {
+        if (left.status === 'verified') return -1
+        if (right.status === 'verified') return 1
+        return 0
+      })[0]
+    setHealthCheckPort(capability?.default_health_check_port || '')
 
     try {
       setProjectLoading(true)
@@ -409,6 +476,100 @@ const Deploy = () => {
                 {projectError}
               </div>
             )}
+
+            {capabilitiesError && (
+              <div style={{
+                backgroundColor: '#fee2e2',
+                color: '#991b1b',
+                padding: '12px',
+                borderRadius: '6px',
+                marginBottom: '16px',
+                fontSize: '14px'
+              }}>
+                {capabilitiesError}
+              </div>
+            )}
+
+            {selectedBuild && !capabilitiesLoading && !capabilitiesError && (
+              <div style={{
+                backgroundColor: selectedCapability?.enabled ? '#ecfdf5' : '#fff7ed',
+                border: `1px solid ${selectedCapability?.enabled ? '#a7f3d0' : '#fed7aa'}`,
+                color: selectedCapability?.enabled ? '#065f46' : '#9a3412',
+                padding: '12px',
+                borderRadius: '6px',
+                marginBottom: '16px',
+                fontSize: '14px'
+              }}>
+                <strong>
+                  {selectedCapability?.status === 'verified' && 'Verified'}
+                  {selectedCapability?.status === 'experimental_enabled' && 'Experimental enabled'}
+                  {selectedCapability?.status === 'experimental_disabled' && 'Experimental disabled'}
+                  {!selectedCapability && 'Unsupported'}
+                </strong>
+                <span>
+                  {' - '}
+                  {selectedCapability?.name || `${selectedBuild.detected_framework || 'Unknown'} / ${selectedBuild.detected_runtime || 'Unknown'}`}
+                </span>
+              </div>
+            )}
+
+            <div className="health-check-grid" style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 2fr)',
+              gap: '12px',
+              marginBottom: '16px'
+            }}>
+              <div>
+                <label style={{
+                  display: 'block',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  color: '#374151',
+                  marginBottom: '6px'
+                }}>
+                  Health Port
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="65535"
+                  value={healthCheckPort}
+                  onChange={(e) => setHealthCheckPort(e.target.value)}
+                  placeholder="Optional"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '6px',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{
+                  display: 'block',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  color: '#374151',
+                  marginBottom: '6px'
+                }}>
+                  Health Path
+                </label>
+                <input
+                  type="text"
+                  value={healthCheckPath}
+                  onChange={(e) => setHealthCheckPath(e.target.value)}
+                  placeholder="/"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '6px',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+            </div>
 
             <div style={{ marginBottom: '16px' }}>
               <label style={{

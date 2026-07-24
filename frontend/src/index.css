@@ -103,4 +103,8 @@ code {
   .execution-grid {
     grid-template-columns: minmax(0, 1fr) !important;
   }
+
+  .health-check-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
 }
